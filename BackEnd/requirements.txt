@@ -1,7 +1,7 @@
 # ─── Django Core ─────────────────────────────────────────────────────────────
 Django==5.1.4
 djangorestframework==3.15.2
-django-cors-headers==4.4.0
+django-cors-headers>=4.4.0
 django-filter==24.3
 
 # ─── ASGI / WebSocket ────────────────────────────────────────────────────────
@@ -29,8 +29,8 @@ boto3==1.35.72
 minio==7.2.11
 
 # ─── AI / ML ──────────────────────────────────────────────────────────────────
-torch==2.5.1
-torchvision==0.20.1
+torch<2.3.0,>=2.2.0
+torchvision<0.18.0,>=0.17.0
 transformers==4.47.1
 sentence-transformers==3.3.1
 ultralytics==8.3.50
@@ -38,9 +38,9 @@ facenet-pytorch==2.6.0
 deap==1.4.1
 ortools>=9.12
 opencv-python-headless==4.10.0.84
-numpy==2.0.2
+numpy<2.0.0
 scikit-learn==1.5.2
-Pillow==11.0.0
+Pillow<10.3.0
 
 # ─── PDF / Docs ───────────────────────────────────────────────────────────────
 reportlab==4.2.5
@@ -52,9 +52,9 @@ python-decouple==3.8
 django-extensions==3.2.3
 cryptography==43.0.3
 qrcode[pil]==8.0
-python-barcode==0.15.1
+python-barcode>=0.15.1
 shortuuid==1.0.13
-django-audit-log==0.9.0
+django-audit-log>=0.7.0
 
 # ─── Testing ──────────────────────────────────────────────────────────────────
 pytest==8.3.3

@@ -2,15 +2,73 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../../core/theme/app_theme.dart';
-import '../../mock_data.dart';
+import '../../services/api_service.dart';
 
-class AdmitCardScreen extends StatelessWidget {
+class AdmitCardScreen extends StatefulWidget {
   const AdmitCardScreen({super.key});
 
   @override
+  State<AdmitCardScreen> createState() => _AdmitCardScreenState();
+}
+
+class _AdmitCardScreenState extends State<AdmitCardScreen> {
+  Map<String, dynamic>? studentProfile;
+  List<dynamic> hallTickets = [];
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchData();
+  }
+
+  Future<void> _fetchData() async {
+    try {
+      final profileData = await ApiService.get('/student/portal/my_profile/');
+      final ticketsData = await ApiService.get('/student/portal/my_hall_tickets/');
+      
+      setState(() {
+        studentProfile = profileData;
+        hallTickets = ticketsData is List ? ticketsData : [];
+        _isLoading = false;
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to load admit card: $e'), backgroundColor: Colors.red),
+        );
+      }
+      setState(() => _isLoading = false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final student = mockStudentProfile;
-    final activeExam = mockExamSchedule.first;
+    if (_isLoading) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    final student = studentProfile ?? {};
+    final fullName = student['name'] ?? 'Unknown';
+    final usn = student['usn'] ?? 'N/A';
+    final semester = 'Semester ${student['semester'] ?? '-'}';
+    final program = 'B.Tech - ${student['department'] ?? 'CS'}';
+    final initials = fullName.split(' ').map((e) => e.isNotEmpty ? e[0] : '').take(2).join('').toUpperCase();
+
+    // Take the most recent hall ticket, if any
+    final latestTicket = hallTickets.isNotEmpty ? hallTickets.first : null;
+    final slots = latestTicket != null ? (latestTicket['slots'] as List? ?? latestTicket['schedule'] as List? ?? []) : [];
+    final activeExam = slots.isNotEmpty ? slots.first : null;
+    final qrPayload = latestTicket != null ? (latestTicket['qr_code_data'] ?? latestTicket['qr_payload'] ?? '') : '';
+    final sessionName = latestTicket != null ? (latestTicket['exam_session_name'] ?? '') : '';
+    // is_cie is provided by backend; fall back to session name check
+    final isCie = latestTicket != null
+        ? (latestTicket['is_cie'] == true || sessionName.toUpperCase().contains('CIE'))
+        : false;
+    final examTypeLabel = isCie ? 'CIE EXAMINATION HALL TICKET' : 'END-SEMESTER EXAM HALL TICKET';
+    final ticketNumber = latestTicket != null ? (latestTicket['ticket_number'] ?? '') : '';
 
     return Scaffold(
       backgroundColor: AppTheme.bgBase,
@@ -66,23 +124,25 @@ class AdmitCardScreen extends StatelessWidget {
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'NEXAI AUTONOMOUS UNIVERSITY',
-                              style: GoogleFonts.inter(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w900,
-                                fontSize: 11,
-                                letterSpacing: 1,
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'NEXAI AUTONOMOUS UNIVERSITY',
+                                style: GoogleFonts.inter(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 11,
+                                  letterSpacing: 1,
+                                ),
                               ),
-                            ),
-                            const Text(
-                              'END-SEMESTER EXAM HALL TICKET',
-                              style: TextStyle(color: Color(0xFF4ADE80), fontWeight: FontWeight.w700, fontSize: 11),
-                            ),
-                          ],
+                              Text(
+                                examTypeLabel,
+                                style: const TextStyle(color: Color(0xFF4ADE80), fontWeight: FontWeight.w700, fontSize: 11),
+                              ),
+                            ],
+                          ),
                         ),
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -109,7 +169,7 @@ class AdmitCardScreen extends StatelessWidget {
                               radius: 30,
                               backgroundColor: AppTheme.primary,
                               child: Text(
-                                student.avatarInitials,
+                                initials,
                                 style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 20),
                               ),
                             ),
@@ -119,15 +179,15 @@ class AdmitCardScreen extends StatelessWidget {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    student.fullName,
+                                    fullName,
                                     style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 16),
                                   ),
                                   Text(
-                                    'USN: ${student.usn}',
+                                    'USN: $usn',
                                     style: const TextStyle(fontWeight: FontWeight.w700, color: AppTheme.accentBlue, fontSize: 13),
                                   ),
                                   Text(
-                                    '${student.program} • ${student.semester}',
+                                    '$program • $semester',
                                     style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
                                   ),
                                 ],
@@ -150,8 +210,8 @@ class AdmitCardScreen extends StatelessWidget {
                           ),
                           child: Column(
                             children: [
-                              QrImageView(
-                                data: activeExam.qrPayload,
+                              if (qrPayload.isNotEmpty) QrImageView(
+                                data: qrPayload,
                                 version: QrVersions.auto,
                                 size: 160.0,
                                 eyeStyle: const QrEyeStyle(
@@ -171,50 +231,53 @@ class AdmitCardScreen extends StatelessWidget {
                         const SizedBox(height: 20),
 
                         // Designated Seat Radar Card
-                        Container(
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
-                            color: AppTheme.primaryLight,
-                            borderRadius: BorderRadius.circular(16),
-                            border: Border.all(color: AppTheme.primary.withValues(alpha: 0.3)),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Row(
-                                children: [
-                                  Icon(Icons.location_on, color: AppTheme.primaryDark, size: 18),
-                                  SizedBox(width: 6),
-                                  Text('Allocated Examination Desk:', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12, color: AppTheme.primaryDark)),
-                                ],
-                              ),
-                              const SizedBox(height: 10),
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(activeExam.hallNumber, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
-                                      Text(activeExam.timeSlot, style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
-                                    ],
-                                  ),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                                    decoration: BoxDecoration(
-                                      color: AppTheme.primary,
-                                      borderRadius: BorderRadius.circular(10),
+                          if (activeExam != null) Container(
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: AppTheme.primaryLight,
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(color: AppTheme.primary.withValues(alpha: 0.3)),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    const Icon(Icons.location_on, color: AppTheme.primaryDark, size: 18),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      isCie ? 'CIE Examination Hall & Seat:' : 'First Allocated Examination Desk:',
+                                      style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12, color: AppTheme.primaryDark),
                                     ),
-                                    child: Text(
-                                      activeExam.deskNumber,
-                                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 14),
+                                  ],
+                                ),
+                                const SizedBox(height: 10),
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(activeExam['room_allocated'] ?? activeExam['room'] ?? 'TBD', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
+                                        Text('${activeExam['exam_date'] ?? ''} ${activeExam['exam_time'] ?? ''}', style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                                      ],
                                     ),
-                                  ),
-                                ],
-                              ),
-                            ],
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                                      decoration: BoxDecoration(
+                                        color: AppTheme.primary,
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                      child: Text(
+                                        activeExam['desk_number'] ?? activeExam['seat'] ?? 'TBD',
+                                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 14),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
                           ),
-                        ),
 
                         const SizedBox(height: 20),
 
@@ -222,9 +285,15 @@ class AdmitCardScreen extends StatelessWidget {
                         Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text('Registered Examination Timetable:', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12)),
+                            Text(isCie ? 'CIE Details & Attendance:' : 'Registered Examination Timetable:', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12)),
                             const SizedBox(height: 10),
-                            ...mockExamSchedule.map((exam) {
+                            if (slots.isEmpty) ...[
+                              const Text('No exam schedule available yet.', style: TextStyle(color: Colors.red)),
+                              const SizedBox(height: 8),
+                              Text('Session: ${latestTicket?['exam_session_name'] ?? 'N/A'}', style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                              if (ticketNumber.isNotEmpty) Text('Ticket: $ticketNumber', style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                            ],
+                            ...slots.map((exam) {
                               return Container(
                                 margin: const EdgeInsets.only(bottom: 8),
                                 padding: const EdgeInsets.all(12),
@@ -239,11 +308,17 @@ class AdmitCardScreen extends StatelessWidget {
                                     Column(
                                       crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
-                                        Text('${exam.courseCode}: ${exam.courseTitle}', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
-                                        Text('${exam.examDate} • ${exam.timeSlot}', style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+                                        Text('${exam['subject_code']}: ${exam['subject_title']}', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+                                        if (isCie)
+                                          Text('Attendance: ${exam['attendance'] ?? 'N/A'}%', style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary))
+                                        else
+                                          Text('${exam['exam_date']} • ${exam['exam_time']}', style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
                                       ],
                                     ),
-                                    Text(exam.deskNumber, style: const TextStyle(fontWeight: FontWeight.w800, color: AppTheme.accentBlue, fontSize: 11)),
+                                    if (isCie)
+                                      Text('${exam['cie_marks'] ?? 'N/A'} / 50', style: const TextStyle(fontWeight: FontWeight.w800, color: AppTheme.accentBlue, fontSize: 11))
+                                    else
+                                      Text(exam['desk_number'] ?? '', style: const TextStyle(fontWeight: FontWeight.w800, color: AppTheme.accentBlue, fontSize: 11)),
                                   ],
                                 ),
                               );

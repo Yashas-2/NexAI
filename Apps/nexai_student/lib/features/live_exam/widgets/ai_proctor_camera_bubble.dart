@@ -224,10 +224,7 @@ class _AiProctorCameraBubbleState extends State<AiProctorCameraBubble> with Sing
                     const Text('LIVE', style: TextStyle(color: Colors.white, fontSize: 8, fontWeight: FontWeight.w900)),
                   ],
                 ),
-                InkWell(
-                  onTap: () => setState(() => _isMinimized = true),
-                  child: const Icon(Icons.close_fullscreen, size: 12, color: Colors.white70),
-                ),
+                const Icon(Icons.security, size: 12, color: Color(0xFF4ADE80)),
               ],
             ),
           ),

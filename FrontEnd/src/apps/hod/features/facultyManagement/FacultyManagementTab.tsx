@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { FacultyMember, CourseRecord } from '../../types';
 import {
   Users,
@@ -10,20 +10,27 @@ import {
   ShieldCheck,
   Building,
   BookOpen,
-  X
+  X,
+  Edit2,
+  Trash2
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { api } from '@/services/api';
 
 interface Props {
   facultyMembers: FacultyMember[];
   courses: CourseRecord[];
   onAddFaculty: (newFaculty: FacultyMember) => void;
+  onUpdateFaculty: (updatedFaculty: FacultyMember) => void;
+  onDeleteFaculty: (id: string) => void;
 }
 
 export const FacultyManagementTab: React.FC<Props> = ({
   facultyMembers,
   courses,
   onAddFaculty,
+  onUpdateFaculty,
+  onDeleteFaculty,
 }) => {
   const [isRegisterModalOpen, setIsRegisterModalOpen] = useState(false);
   const [selectedCredFaculty, setSelectedCredFaculty] = useState<FacultyMember | null>(null);
@@ -34,32 +41,122 @@ export const FacultyManagementTab: React.FC<Props> = ({
   const [email, setEmail] = useState('');
   const [employeeId, setEmployeeId] = useState('');
   const [designation, setDesignation] = useState('Assistant Professor');
-  const [assignedCourseCode, setAssignedCourseCode] = useState('CS201');
 
-  const handleRegisterSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const newFaculty: FacultyMember = {
-      id: `FAC_${Date.now().toString().slice(-3)}`,
-      name: name.trim(),
-      email: email.trim().toLowerCase(),
-      employeeId: employeeId.trim().toUpperCase(),
-      designation: designation,
-      department: 'Computer Science & Engineering',
-      assignedCourses: [assignedCourseCode],
-      tempPassword: 'password123',
-      status: 'ACTIVE',
-      createdDate: new Date().toISOString().split('T')[0],
-    };
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [selectedEditFaculty, setSelectedEditFaculty] = useState<FacultyMember | null>(null);
 
-    onAddFaculty(newFaculty);
-    setIsRegisterModalOpen(false);
-    setSelectedCredFaculty(newFaculty);
-    toast.success(`Faculty profile & login credentials created for ${newFaculty.name}!`);
+  const openEditModal = (fac: FacultyMember) => {
+    setSelectedEditFaculty(fac);
+    setName(fac.name);
+    setEmail(fac.email);
+    setEmployeeId(fac.employeeId);
+    setDesignation(fac.designation);
+    setIsEditModalOpen(true);
+  };
 
-    // Reset Form
+  const closeEditModal = () => {
+    setIsEditModalOpen(false);
+    setSelectedEditFaculty(null);
     setName('');
     setEmail('');
     setEmployeeId('');
+    setDesignation('Assistant Professor');
+  };
+
+  const handleRegisterSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const res = await api.post('/auth/users/create/', {
+        full_name: name.trim(),
+        email: email.trim().toLowerCase(),
+        employee_id: employeeId.trim().toUpperCase(),
+        role: 'FACULTY',
+        password: 'password123'
+      });
+
+      const newUser = res.data;
+      const newFaculty: FacultyMember = {
+        id: newUser.id,
+        name: newUser.full_name,
+        email: newUser.email,
+        employeeId: newUser.employee_id || newUser.id.slice(0, 8),
+        designation: designation,
+        department: 'Computer Science & Engineering',
+        assignedCourses: [],
+        tempPassword: 'password123',
+        status: 'ACTIVE',
+        createdDate: new Date().toISOString().split('T')[0],
+      };
+
+      onAddFaculty(newFaculty);
+      setIsRegisterModalOpen(false);
+      setSelectedCredFaculty(newFaculty);
+      toast.success(`Faculty profile & login credentials created for ${newFaculty.name}!`);
+
+      // Reset Form
+      setName('');
+      setEmail('');
+      setEmployeeId('');
+
+    } catch (err: any) {
+      const data = err.response?.data;
+      if (data) {
+        if (data.error) {
+          toast.error(data.error);
+        } else if (typeof data === 'object') {
+          // DRF validation errors
+          const firstKey = Object.keys(data)[0];
+          const firstError = data[firstKey];
+          toast.error(`${firstKey}: ${Array.isArray(firstError) ? firstError[0] : firstError}`);
+        } else {
+          toast.error('Failed to create faculty');
+        }
+      } else {
+        toast.error('Failed to create faculty');
+      }
+    }
+  };
+
+  const handleEditSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedEditFaculty) return;
+
+    try {
+      const res = await api.patch(`/auth/users/${selectedEditFaculty.id}/`, {
+        full_name: name.trim(),
+        email: email.trim().toLowerCase(),
+        employee_id: employeeId.trim().toUpperCase(),
+      });
+
+      // Update designation if needed (frontend only for now since backend User model lacks designation field)
+      const updatedFaculty: FacultyMember = {
+        ...selectedEditFaculty,
+        name: res.data.full_name,
+        email: res.data.email,
+        employeeId: res.data.employee_id || res.data.id.slice(0, 8),
+        designation: designation,
+      };
+
+      onUpdateFaculty(updatedFaculty);
+      closeEditModal();
+      toast.success(`Faculty profile updated for ${updatedFaculty.name}!`);
+
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Failed to update faculty');
+    }
+  };
+
+  const handleDelete = async (id: string, facultyName: string) => {
+    if (!window.confirm(`Are you sure you want to permanently delete ${facultyName}?\nThis action cannot be undone.`)) {
+      return;
+    }
+    try {
+      await api.delete(`/auth/users/${id}/`);
+      onDeleteFaculty(id);
+      toast.success('Faculty member deleted successfully.');
+    } catch (err: any) {
+      toast.error('Failed to delete faculty member.');
+    }
   };
 
   const handleCopyCredentials = (fac: FacultyMember) => {
@@ -159,6 +256,7 @@ Role: Faculty / Evaluator`;
                 <th style={{ padding: '12px 16px', fontWeight: 700 }}>ASSIGNED COURSES</th>
                 <th style={{ padding: '12px 16px', fontWeight: 700 }}>STATUS</th>
                 <th style={{ padding: '12px 16px', fontWeight: 700, textAlign: 'right' }}>CREDENTIALS</th>
+                <th style={{ padding: '12px 16px', fontWeight: 700, textAlign: 'center' }}>ACTIONS</th>
               </tr>
             </thead>
             <tbody>
@@ -176,18 +274,22 @@ Role: Faculty / Evaluator`;
                   </td>
                   <td style={{ padding: '14px 16px' }}>
                     <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                      {fac.assignedCourses.map(code => (
-                        <span key={code} style={{
-                          background: '#EEF2FF',
-                          color: '#4F46E5',
-                          padding: '3px 8px',
-                          borderRadius: '6px',
-                          fontSize: '0.75rem',
-                          fontWeight: 800,
-                        }}>
-                          {code}
-                        </span>
-                      ))}
+                      {courses.filter(c => c.assignedFacultyId === fac.id).length === 0 ? (
+                        <span style={{ fontSize: '0.75rem', color: '#94A3B8' }}>None</span>
+                      ) : (
+                        courses.filter(c => c.assignedFacultyId === fac.id).map(c => (
+                          <span key={c.code} style={{
+                            background: '#EEF2FF',
+                            color: '#4F46E5',
+                            padding: '3px 8px',
+                            borderRadius: '6px',
+                            fontSize: '0.75rem',
+                            fontWeight: 800,
+                          }}>
+                            {c.title}
+                          </span>
+                        ))
+                      )}
                     </div>
                   </td>
                   <td style={{ padding: '14px 16px' }}>
@@ -221,6 +323,46 @@ Role: Faculty / Evaluator`;
                     >
                       <KeyRound size={13} color="#16A34A" /> View Credential Slip
                     </button>
+                  </td>
+                  <td style={{ padding: '14px 16px', textAlign: 'center' }}>
+                    <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
+                      <button
+                        onClick={() => openEditModal(fac)}
+                        title="Edit Faculty"
+                        style={{
+                          background: '#EEF2FF',
+                          border: 'none',
+                          color: '#4F46E5',
+                          width: '32px',
+                          height: '32px',
+                          borderRadius: '8px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        <Edit2 size={16} />
+                      </button>
+                      <button
+                        onClick={() => handleDelete(fac.id, fac.name)}
+                        title="Delete Faculty"
+                        style={{
+                          background: '#FEF2F2',
+                          border: 'none',
+                          color: '#EF4444',
+                          width: '32px',
+                          height: '32px',
+                          borderRadius: '8px',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -283,6 +425,8 @@ Role: Faculty / Evaluator`;
                     Full Name (with Title) *
                   </label>
                   <input
+                    id="faculty-name"
+                    name="faculty-name"
                     type="text"
                     required
                     value={name}
@@ -298,6 +442,8 @@ Role: Faculty / Evaluator`;
                       University / Login Email *
                     </label>
                     <input
+                      id="faculty-email"
+                      name="faculty-email"
                       type="email"
                       required
                       value={email}
@@ -311,6 +457,8 @@ Role: Faculty / Evaluator`;
                       Employee ID *
                     </label>
                     <input
+                      id="employee-id"
+                      name="employee-id"
                       type="text"
                       required
                       value={employeeId}
@@ -321,36 +469,22 @@ Role: Faculty / Evaluator`;
                   </div>
                 </div>
 
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: '#475569', marginBottom: '4px' }}>
-                      Academic Designation
-                    </label>
-                    <select
-                      value={designation}
-                      onChange={e => setDesignation(e.target.value)}
-                      style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #CBD5E1', fontSize: '0.85rem', fontWeight: 600, background: 'white' }}
-                    >
-                      <option value="Assistant Professor">Assistant Professor</option>
-                      <option value="Associate Professor">Associate Professor</option>
-                      <option value="Professor">Professor</option>
-                      <option value="Visiting Professor">Visiting Professor</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: '#475569', marginBottom: '4px' }}>
-                      Assign Primary Course
-                    </label>
-                    <select
-                      value={assignedCourseCode}
-                      onChange={e => setAssignedCourseCode(e.target.value)}
-                      style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #CBD5E1', fontSize: '0.85rem', fontWeight: 600, background: 'white' }}
-                    >
-                      {courses.map(c => (
-                        <option key={c.code} value={c.code}>{c.code} — {c.title}</option>
-                      ))}
-                    </select>
-                  </div>
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 700, color: '#475569', marginBottom: '4px' }}>
+                    Academic Designation
+                  </label>
+                  <select
+                    id="designation"
+                    name="designation"
+                    value={designation}
+                    onChange={e => setDesignation(e.target.value)}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #CBD5E1', fontSize: '0.85rem', fontWeight: 600, background: 'white' }}
+                  >
+                    <option value="Assistant Professor">Assistant Professor</option>
+                    <option value="Associate Professor">Associate Professor</option>
+                    <option value="Professor">Professor</option>
+                    <option value="Visiting Professor">Visiting Professor</option>
+                  </select>
                 </div>
 
                 <div style={{
@@ -396,6 +530,194 @@ Role: Faculty / Evaluator`;
                   }}
                 >
                   Register & Provision Credentials ✓
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: Edit Faculty ── */}
+      {isEditModalOpen && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(15, 23, 42, 0.7)',
+          backdropFilter: 'blur(6px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          padding: '1.5rem',
+        }}>
+          <div style={{
+            background: 'white',
+            borderRadius: '20px',
+            maxWidth: '520px',
+            width: '100%',
+            overflow: 'hidden',
+            boxShadow: '0 25px 50px -12px rgba(0,0,0,0.3)',
+          }}>
+            <div style={{
+              padding: '18px 24px',
+              borderBottom: '1px solid #E2E8F0',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              background: '#F8FAFC',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div style={{ width: 34, height: 34, borderRadius: '8px', background: '#EEF2FF', color: '#4F46E5', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Edit2 size={18} />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 800, color: '#0F172A' }}>
+                    Edit Faculty Profile
+                  </h3>
+                  <p style={{ margin: 0, fontSize: '0.75rem', color: '#64748B' }}>
+                    Update details for {selectedEditFaculty?.name}
+                  </p>
+                </div>
+              </div>
+              <button onClick={closeEditModal} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748B' }}>
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleEditSubmit} style={{ padding: '24px' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginBottom: '24px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 700, color: '#475569', marginBottom: '6px' }}>
+                    FULL NAME
+                  </label>
+                  <div style={{ position: 'relative' }}>
+                    <Users size={16} color="#94A3B8" style={{ position: 'absolute', left: 14, top: 12 }} />
+                    <input
+                      required
+                      type="text"
+                      value={name}
+                      onChange={e => setName(e.target.value)}
+                      placeholder="e.g. Dr. John Doe"
+                      style={{
+                        width: '100%',
+                        padding: '10px 14px 10px 38px',
+                        borderRadius: '10px',
+                        border: '1px solid #CBD5E1',
+                        fontSize: '0.9rem',
+                        fontWeight: 600,
+                        boxSizing: 'border-box'
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 700, color: '#475569', marginBottom: '6px' }}>
+                    EMAIL ADDRESS (LOGIN ID)
+                  </label>
+                  <div style={{ position: 'relative' }}>
+                    <Mail size={16} color="#94A3B8" style={{ position: 'absolute', left: 14, top: 12 }} />
+                    <input
+                      required
+                      type="email"
+                      value={email}
+                      onChange={e => setEmail(e.target.value)}
+                      placeholder="john.d@nexai.edu"
+                      style={{
+                        width: '100%',
+                        padding: '10px 14px 10px 38px',
+                        borderRadius: '10px',
+                        border: '1px solid #CBD5E1',
+                        fontSize: '0.9rem',
+                        fontWeight: 600,
+                        boxSizing: 'border-box'
+                      }}
+                    />
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 700, color: '#475569', marginBottom: '6px' }}>
+                      EMPLOYEE ID
+                    </label>
+                    <div style={{ position: 'relative' }}>
+                      <ShieldCheck size={16} color="#94A3B8" style={{ position: 'absolute', left: 14, top: 12 }} />
+                      <input
+                        required
+                        type="text"
+                        value={employeeId}
+                        onChange={e => setEmployeeId(e.target.value)}
+                        placeholder="NEX-F203"
+                        style={{
+                          width: '100%',
+                          padding: '10px 14px 10px 38px',
+                          borderRadius: '10px',
+                          border: '1px solid #CBD5E1',
+                          fontSize: '0.9rem',
+                          fontWeight: 600,
+                          boxSizing: 'border-box'
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 700, color: '#475569', marginBottom: '6px' }}>
+                      DESIGNATION
+                    </label>
+                    <select
+                      value={designation}
+                      onChange={e => setDesignation(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '10.5px 14px',
+                        borderRadius: '10px',
+                        border: '1px solid #CBD5E1',
+                        fontSize: '0.9rem',
+                        fontWeight: 600,
+                        boxSizing: 'border-box'
+                      }}
+                    >
+                      <option>Assistant Professor</option>
+                      <option>Associate Professor</option>
+                      <option>Professor</option>
+                      <option>Guest Lecturer</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+                <button
+                  type="button"
+                  onClick={closeEditModal}
+                  style={{
+                    background: 'white',
+                    border: '1px solid #CBD5E1',
+                    color: '#475569',
+                    padding: '10px 20px',
+                    borderRadius: '10px',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  style={{
+                    background: '#4F46E5',
+                    color: 'white',
+                    border: 'none',
+                    padding: '10px 24px',
+                    borderRadius: '10px',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    boxShadow: '0 4px 12px rgba(79,70,229,0.3)',
+                  }}
+                >
+                  Save Changes
                 </button>
               </div>
             </form>
@@ -477,12 +799,7 @@ Role: Faculty / Evaluator`;
                   </div>
                 </div>
 
-                <div>
-                  <div style={{ fontSize: '0.72rem', color: '#64748B', fontWeight: 700 }}>ASSIGNED COURSES</div>
-                  <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#4F46E5' }}>
-                    {selectedCredFaculty.assignedCourses.join(', ')}
-                  </div>
-                </div>
+
               </div>
 
               <div style={{ marginTop: '16px', display: 'flex', gap: '10px' }}>

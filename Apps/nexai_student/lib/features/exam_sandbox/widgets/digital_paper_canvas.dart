@@ -58,8 +58,7 @@ class _DigitalPaperCanvasState extends State<DigitalPaperCanvas> {
   ];
 
   void _onPanStart(DragStartDetails details) {
-    final RenderBox renderBox = context.findRenderObject() as RenderBox;
-    final localPosition = renderBox.globalToLocal(details.globalPosition);
+    final localPosition = details.localPosition;
 
     setState(() {
       _currentPoints = [localPosition];
@@ -68,8 +67,7 @@ class _DigitalPaperCanvasState extends State<DigitalPaperCanvas> {
   }
 
   void _onPanUpdate(DragUpdateDetails details) {
-    final RenderBox renderBox = context.findRenderObject() as RenderBox;
-    final localPosition = renderBox.globalToLocal(details.globalPosition);
+    final localPosition = details.localPosition;
 
     setState(() {
       if (_selectedTool == DrawingToolType.pen ||

@@ -1,17 +1,25 @@
 import React from 'react';
-import { FacultyCIEPaper } from '../../types';
-import { Plus, CheckCircle2, AlertTriangle, RotateCw } from 'lucide-react';
+import { FacultyCIEPaper, AssignedCourse } from '../../types';
+import { Plus, CheckCircle2, AlertTriangle, RotateCw, Trash2, Edit2 } from 'lucide-react';
 
 interface CIEQuestionPapersTabProps {
+  courses: AssignedCourse[];
+  selectedCourseCode: string;
+  onSelectCourseCode: (code: string) => void;
   ciePapers: FacultyCIEPaper[];
   onOpenCreatePaperModal: () => void;
   onResubmitForReaudit: (paperId: string) => void;
+  onDeletePaper?: (paperId: string) => void;
 }
 
 export const CIEQuestionPapersTab: React.FC<CIEQuestionPapersTabProps> = ({
+  courses,
+  selectedCourseCode,
+  onSelectCourseCode,
   ciePapers,
   onOpenCreatePaperModal,
   onResubmitForReaudit,
+  onDeletePaper,
 }) => {
   return (
     <div>
@@ -36,8 +44,32 @@ export const CIEQuestionPapersTab: React.FC<CIEQuestionPapersTabProps> = ({
           </p>
         </div>
 
-        <button
-          onClick={onOpenCreatePaperModal}
+        <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+          <select
+            value={selectedCourseCode}
+            onChange={(e) => onSelectCourseCode(e.target.value)}
+            style={{
+              padding: '10px 16px',
+              borderRadius: '10px',
+              border: '1px solid #CBD5E1',
+              background: '#F8FAFC',
+              fontWeight: 700,
+              fontSize: '0.9rem',
+              color: '#334155',
+              cursor: 'pointer',
+              outline: 'none',
+              boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.05)',
+            }}
+          >
+            {courses.map(c => (
+              <option key={c.code} value={c.code}>
+                {c.code} - {c.title}
+              </option>
+            ))}
+          </select>
+
+          <button
+            onClick={onOpenCreatePaperModal}
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -55,10 +87,16 @@ export const CIEQuestionPapersTab: React.FC<CIEQuestionPapersTabProps> = ({
         >
           <Plus size={16} /> Draft New CIE Paper
         </button>
+        </div>
       </div>
 
       {/* Existing Papers List */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        {ciePapers.length === 0 && (
+          <div style={{ textAlign: 'center', padding: '40px', background: '#F8FAFC', borderRadius: '16px', border: '1px dashed #CBD5E1', color: '#64748B' }}>
+            No CIE papers drafted for {selectedCourseCode} yet.
+          </div>
+        )}
         {ciePapers.map(paper => (
           <div
             key={paper.id}
@@ -113,6 +151,15 @@ export const CIEQuestionPapersTab: React.FC<CIEQuestionPapersTabProps> = ({
                     DRAFT
                   </span>
                 )}
+                {onDeletePaper && (
+                  <button 
+                    onClick={() => onDeletePaper(paper.id)}
+                    style={{ background: 'transparent', border: 'none', color: '#EF4444', cursor: 'pointer', marginLeft: '8px', padding: '4px', display: 'inline-flex', alignItems: 'center' }}
+                    title="Delete Draft"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                )}
               </div>
             </div>
 
@@ -122,6 +169,11 @@ export const CIEQuestionPapersTab: React.FC<CIEQuestionPapersTabProps> = ({
                 <div key={q.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.82rem' }}>
                   <div style={{ color: '#334155' }}>
                     <strong>Q{q.qNumber}.</strong> {q.text}
+                    {q.answer && (
+                      <div style={{ marginTop: '4px', fontSize: '0.75rem', color: '#64748B', fontStyle: 'italic' }}>
+                        Ans: {q.answer}
+                      </div>
+                    )}
                   </div>
                   <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
                     <span style={{ background: '#EEF2FF', color: '#4F46E5', padding: '2px 6px', borderRadius: '4px', fontSize: '0.72rem', fontWeight: 800 }}>{q.co}</span>
@@ -177,7 +229,7 @@ export const CIEQuestionPapersTab: React.FC<CIEQuestionPapersTabProps> = ({
                     flexShrink: 0
                   }}
                 >
-                  <RotateCw size={14} /> Resubmit for Re-Audit ✓
+                  <Edit2 size={14} /> Open for Revision & Resubmit
                 </button>
               </div>
             )}

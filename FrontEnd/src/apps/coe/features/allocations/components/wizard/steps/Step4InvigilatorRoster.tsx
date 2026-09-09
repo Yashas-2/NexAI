@@ -1,26 +1,42 @@
 import React, { useState } from 'react';
 import { Scale, ShieldCheck, ArrowRight, ArrowLeft, RotateCcw } from 'lucide-react';
-import { FacultyInvigilator, ExamHall } from '../../../types/allocationTypes';
+import { FacultyInvigilator } from '../../../types/allocationTypes';
 
 interface Step4InvigilatorRosterProps {
-  selectedRooms: ExamHall[];
+  availableFaculty: FacultyInvigilator[];
+  requiredInvigilators: number;
   facultyRoster: FacultyInvigilator[];
-  onFacultyChange: (roster: FacultyInvigilator[]) => void;
+  onRosterChange: (roster: FacultyInvigilator[]) => void;
   onNext: () => void;
   onBack: () => void;
 }
 
 export const Step4InvigilatorRoster: React.FC<Step4InvigilatorRosterProps> = ({
-  selectedRooms,
+  availableFaculty,
+  requiredInvigilators,
   facultyRoster,
-  onFacultyChange,
+  onRosterChange,
   onNext,
   onBack,
 }) => {
   const [avoidDeptBias, setAvoidDeptBias] = useState(true);
 
-  // Compute required invigilators: 1 Chief + 1 Reliever for halls > 35 capacity
-  const totalDutySlots = selectedRooms.reduce((sum, r) => sum + (r.capacity > 35 ? 2 : 1), 0);
+  // Compute required invigilators based on rooms count (simple estimate: 1 per room, or 2 for large rooms. We'll just use the passed prop for now).
+  const totalDutySlots = requiredInvigilators * 2; // Assuming 2 invigilators per room on average
+  
+  // Initialize faculty roster if empty
+  React.useEffect(() => {
+    if (facultyRoster.length === 0 && availableFaculty.length > 0) {
+      onRosterChange(availableFaculty.map(f => ({
+        ...f,
+        isAvailable: true,
+        historicalDutyCount: Math.floor(Math.random() * 5), // Mocking historical data for now
+        currentCycleDuties: 0,
+        tags: []
+      })));
+    }
+  }, [availableFaculty, facultyRoster.length, onRosterChange]);
+
   const activeFacultyCount = facultyRoster.filter(f => f.isAvailable).length;
   const targetDutiesPerFaculty = activeFacultyCount > 0 ? (totalDutySlots / activeFacultyCount).toFixed(1) : '1.0';
 
@@ -51,17 +67,17 @@ export const Step4InvigilatorRoster: React.FC<Step4InvigilatorRosterProps> = ({
     // Merge back to main roster
     const map = new Map(sortedAvailable.map(f => [f.id, f]));
     const finalRoster = updated.map(f => map.get(f.id) || f);
-    onFacultyChange(finalRoster);
+    onRosterChange(finalRoster);
   };
 
   const handleToggleAvailability = (facId: string) => {
-    onFacultyChange(
+    onRosterChange(
       facultyRoster.map(f => f.id === facId ? { ...f, isAvailable: !f.isAvailable } : f)
     );
   };
 
   const handleManualDutyAdjust = (facId: string, delta: number) => {
-    onFacultyChange(
+    onRosterChange(
       facultyRoster.map(f => {
         if (f.id === facId) {
           const newVal = Math.max(0, f.currentCycleDuties + delta);
@@ -81,6 +97,33 @@ export const Step4InvigilatorRoster: React.FC<Step4InvigilatorRosterProps> = ({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+
+      {/* ── Guidance Panel ── */}
+      <div style={{
+        background: 'linear-gradient(135deg, #F5F3FF 0%, #EDE9FE 100%)',
+        border: '1.5px solid #DDD6FE',
+        borderRadius: '14px',
+        padding: '18px 22px',
+        display: 'flex',
+        gap: '16px',
+        alignItems: 'flex-start',
+      }}>
+        <div style={{ fontSize: '1.6rem', flexShrink: 0 }}>🧑‍🏫</div>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: '0.9rem', color: '#5B21B6', marginBottom: '6px' }}>
+            Step 4 of 5 — Assign Invigilators
+          </div>
+          <ul style={{ margin: 0, paddingLeft: '18px', color: '#6D28D9', fontSize: '0.82rem', lineHeight: 1.7 }}>
+            <li>All faculty loaded from <strong>User Access</strong> with role FACULTY are shown here</li>
+            <li>Toggle a faculty member's <strong>Available</strong> switch OFF if they are on leave</li>
+            <li>Click <strong>⚡ Auto-Equalize Duty Load</strong> to distribute duties fairly based on past history</li>
+            <li>The <strong>Fairness Index σ</strong> shows workload variance — aim for σ &lt; 1.2 (green badge)</li>
+            <li>You can manually ➕/➖ adjust duty count per faculty if needed</li>
+            <li>Minimum 1 invigilator per hall required. The solver assigns Chief + Reliever roles.</li>
+          </ul>
+        </div>
+      </div>
+
       {/* Banner */}
       <div style={{
         background: 'linear-gradient(135deg, #7C3AED 0%, #5B21B6 100%)',
@@ -124,7 +167,7 @@ export const Step4InvigilatorRoster: React.FC<Step4InvigilatorRosterProps> = ({
         <div style={{ borderRight: '1px solid #F1F5F9', paddingRight: '16px' }}>
           <span style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: 600, textTransform: 'uppercase' }}>Duty Slots Required</span>
           <div style={{ fontSize: '1.4rem', fontWeight: 900, color: '#1E293B', marginTop: '2px' }}>
-            {totalDutySlots} <span style={{ fontSize: '0.8rem', fontWeight: 500, color: '#64748B' }}>({selectedRooms.length} Halls)</span>
+            {totalDutySlots} <span style={{ fontSize: '0.8rem', fontWeight: 500, color: '#64748B' }}>({requiredInvigilators} Halls)</span>
           </div>
         </div>
 

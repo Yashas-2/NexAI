@@ -30,6 +30,7 @@ class ExamScheduleItem {
   final String eligibilityStatus; // "ELIGIBLE", "CONDONATION_REQUIRED"
   final bool isCompleted;
   final String qrPayload;
+  final String? questionPaperId;
 
   ExamScheduleItem({
     required this.courseCode,
@@ -41,6 +42,7 @@ class ExamScheduleItem {
     required this.eligibilityStatus,
     this.isCompleted = false,
     required this.qrPayload,
+    this.questionPaperId,
   });
 }
 

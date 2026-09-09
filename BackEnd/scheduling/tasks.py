@@ -94,7 +94,33 @@ def generate_timetable(self, exam_session_id: str, time_limit_secs: int = 120) -
                 )
             )
 
-        TimetableSlot.objects.bulk_create(slots_to_create, ignore_conflicts=True)
+        created_slots = TimetableSlot.objects.bulk_create(slots_to_create, ignore_conflicts=True)
+        
+        # In bulk_create on SQLite/PostgreSQL, IDs might not be returned reliably for ignore_conflicts=True
+        # Fetch the newly created slots to assign invigilation duties
+        saved_slots = TimetableSlot.objects.filter(
+            exam_session_id=exam_session_id,
+            status=TimetableSlot.SlotStatus.SCHEDULED,
+        ).select_related("subject")
+
+        from scheduling.models import InvigilationDuty
+        
+        duties_to_create = []
+        for slot in saved_slots:
+            # Find the matching assignment by subject
+            for asgn in result.assignments:
+                if str(slot.subject_id) == asgn.subject_id and asgn.invigilator_id:
+                    duties_to_create.append(
+                        InvigilationDuty(
+                            timetable_slot=slot,
+                            invigilator_id=asgn.invigilator_id,
+                            duty_role=InvigilationDuty.DutyRole.CHIEF_INVIGILATOR,
+                        )
+                    )
+                    break
+        
+        if duties_to_create:
+            InvigilationDuty.objects.bulk_create(duties_to_create, ignore_conflicts=True)
 
         # ── 4. Update session status ──────────────────────────────────────────
         session.status = ExamSession.SessionStatus.SCHEDULED

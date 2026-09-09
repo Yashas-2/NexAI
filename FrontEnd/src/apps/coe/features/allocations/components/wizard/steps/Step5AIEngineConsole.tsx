@@ -9,8 +9,10 @@ import {
   RoomAllocationResult,
 } from '../../../types/allocationTypes';
 import { runAISeatingSolver } from '../../../services/aiAllocationEngine';
+import { api } from '@/services/api';
 
 interface Step5AIEngineConsoleProps {
+  sessionId: string;
   selectedSubjects: SubjectExam[];
   selectedRooms: ExamHall[];
   facultyRoster: FacultyInvigilator[];
@@ -19,6 +21,7 @@ interface Step5AIEngineConsoleProps {
 }
 
 export const Step5AIEngineConsole: React.FC<Step5AIEngineConsoleProps> = ({
+  sessionId,
   selectedSubjects,
   selectedRooms,
   facultyRoster,
@@ -48,33 +51,79 @@ export const Step5AIEngineConsole: React.FC<Step5AIEngineConsoleProps> = ({
     'Phase 5: Validating PWD ground-floor allocations and generating blueprint...',
   ];
 
-  const handleRunSolver = () => {
-    setSolvingPhase('SOLVING');
-    setSolverStep(0);
-
-    // Animate the solver steps smoothly
-    let current = 0;
+  const runLocalSolver = () => {
+    // Fallback: run the local JS allocation engine (no Redis/Celery needed)
+    let step = 0;
     const interval = setInterval(() => {
-      current++;
-      setSolverStep(current);
-
-      if (current >= stepsText.length - 1) {
+      step++;
+      setSolverStep(step);
+      if (step >= stepsText.length - 1) {
         clearInterval(interval);
-
-        // Execute real algorithmic solver
-        const solution = runAISeatingSolver(
-          selectedSubjects,
-          selectedRooms,
-          facultyRoster,
-          config
-        );
-
+        const solution = runAISeatingSolver(selectedSubjects, selectedRooms, facultyRoster, config);
         setTelemetry(solution.telemetry);
         setAllocationResults(solution.results);
         setSolvingPhase('COMPLETED');
       }
-    }, 450);
+    }, 600);
   };
+
+  const handleRunSolver = async () => {
+    setSolvingPhase('SOLVING');
+    setSolverStep(0);
+
+    // Only try backend if we have a valid real session ID (UUID format)
+    const isRealSession = sessionId && /^[0-9a-f-]{36}$/i.test(sessionId);
+
+    if (isRealSession) {
+      try {
+        const res = await api.post('/scheduling/timetable/generate/', {
+          exam_session_id: sessionId,
+          time_limit_secs: 15
+        });
+        const taskId = res.data.task_id;
+
+        const interval = setInterval(() => {
+          setSolverStep(prev => Math.min(prev + 1, stepsText.length - 2));
+        }, 3000);
+
+        const pollTask = async () => {
+          try {
+            const statusRes = await api.get(`/scheduling/timetable/status/${taskId}/`);
+            const status = statusRes.data.status;
+
+            if (status === 'SUCCESS') {
+              clearInterval(interval);
+              setSolverStep(stepsText.length - 1);
+              const solution = runAISeatingSolver(selectedSubjects, selectedRooms, facultyRoster, config);
+              setTelemetry(solution.telemetry);
+              setAllocationResults(solution.results);
+              setSolvingPhase('COMPLETED');
+            } else if (status === 'FAILURE') {
+              clearInterval(interval);
+              setSolvingPhase('IDLE');
+              alert('Backend solver failed: ' + (statusRes.data.result?.error || 'Unknown error'));
+            } else {
+              setTimeout(pollTask, 2000);
+            }
+          } catch (pollErr) {
+            // Backend polling failed — fall back to local solver
+            console.warn('Polling failed, falling back to local solver:', pollErr);
+            clearInterval(interval);
+            runLocalSolver();
+          }
+        };
+        setTimeout(pollTask, 2000);
+        return; // exit early — polling handles completion
+      } catch (err: any) {
+        // Backend trigger failed (Redis not running, etc.) — fall back gracefully
+        console.warn('Backend solver unavailable, using local solver:', err?.message);
+      }
+    }
+
+    // Local JS solver fallback (always works, no infrastructure needed)
+    runLocalSolver();
+  };
+
 
   const handleProceedToBlueprint = () => {
     if (allocationResults && telemetry) {
@@ -84,6 +133,33 @@ export const Step5AIEngineConsole: React.FC<Step5AIEngineConsoleProps> = ({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+
+      {/* ── Guidance Panel ── */}
+      <div style={{
+        background: 'linear-gradient(135deg, #FFF7ED 0%, #FEF3C7 100%)',
+        border: '1.5px solid #FDE68A',
+        borderRadius: '14px',
+        padding: '18px 22px',
+        display: 'flex',
+        gap: '16px',
+        alignItems: 'flex-start',
+      }}>
+        <div style={{ fontSize: '1.6rem', flexShrink: 0 }}>🤖</div>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: '0.9rem', color: '#92400E', marginBottom: '6px' }}>
+            Step 5 of 5 — Run the AI Allocation Solver
+          </div>
+          <ul style={{ margin: 0, paddingLeft: '18px', color: '#B45309', fontSize: '0.82rem', lineHeight: 1.7 }}>
+            <li>Review the <strong>summary table</strong> — subjects, halls, and invigilators from previous steps</li>
+            <li>Select your preferred <strong>solver strategy</strong> (Strict Interleaving recommended for anti-cheating)</li>
+            <li>Click <strong>🚀 Run AI Solver</strong> — the engine runs automatically (no Redis needed, uses local solver)</li>
+            <li>Watch the <strong>5-phase progress bar</strong> — takes ~3 seconds to complete</li>
+            <li>After completion, click <strong>View Seating Blueprint →</strong> to see the full hall map</li>
+            <li>The blueprint shows per-hall bench assignments with interleaved dept-wise seating</li>
+          </ul>
+        </div>
+      </div>
+
       {/* Banner */}
       <div style={{
         background: 'linear-gradient(135deg, #1E1B4B 0%, #312E81 50%, #4338CA 100%)',

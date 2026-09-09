@@ -2,70 +2,100 @@ import React, { useState } from 'react';
 import { X, Upload, FileText } from 'lucide-react';
 import { StudentEligibilityRecord } from '../../../types';
 
+import { api } from '@/services/api';
+import toast from 'react-hot-toast';
+
 interface CSVUploadModalProps {
   onImportStudents: (imported: StudentEligibilityRecord[]) => void;
   onClose: () => void;
 }
 
 export const CSVUploadModal: React.FC<CSVUploadModalProps> = ({ onImportStudents, onClose }) => {
-  const [selectedFileName] = useState<string>('CSE_Fall2026_Attendance_Master.csv');
+  const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [previewParsed, setPreviewParsed] = useState<StudentEligibilityRecord[] | null>(null);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
 
-  const handleSimulateParse = () => {
-    setIsProcessing(true);
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setSelectedFileName(file.name);
+      setIsProcessing(true);
 
-    setTimeout(() => {
-      setPreviewParsed([
-        {
-          id: `imp_${Date.now()}_1`,
-          usn: '1RV23CS010',
-          name: 'Ishaan Gupta',
-          email: 'ishaan.cs23@rvce.edu.in',
-          semester: '3rd Sem',
-          department: 'Computer Science',
-          section: 'A',
-          attendancePercent: 91.0,
-          totalClassesHeld: 80,
-          classesAttended: 73,
-          cieMarksAvg: 45.0,
-          status: 'ELIGIBLE',
-          hasFeeDues: false,
-        },
-        {
-          id: `imp_${Date.now()}_2`,
-          usn: '1RV23CS011',
-          name: 'Meera Iyer',
-          email: 'meera.cs23@rvce.edu.in',
-          semester: '3rd Sem',
-          department: 'Computer Science',
-          section: 'A',
-          attendancePercent: 72.5,
-          totalClassesHeld: 80,
-          classesAttended: 58,
-          cieMarksAvg: 39.0,
-          status: 'CONDONABLE',
-          hasFeeDues: false,
-          condonationReason: 'Sports Leave for Inter-University Badminton Championship',
-        },
-        {
-          id: `imp_${Date.now()}_3`,
-          usn: '1RV23CS012',
-          name: 'Tanvi Kulkarni',
-          email: 'tanvi.cs23@rvce.edu.in',
-          semester: '3rd Sem',
-          department: 'Computer Science',
-          section: 'A',
-          attendancePercent: 84.0,
-          totalClassesHeld: 80,
-          classesAttended: 67,
-          cieMarksAvg: 42.0,
-          status: 'ELIGIBLE',
-          hasFeeDues: false,
-        },
-      ]);
-      setIsProcessing(false);
-    }, 1000);
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const text = event.target?.result as string;
+        if (text) {
+          const lines = text.split('\n').filter(l => l.trim() !== '');
+          if (lines.length > 1) {
+            // Assume headers are: name,usn,subject_code,attendance,cie
+            const records: StudentEligibilityRecord[] = [];
+            for (let i = 1; i < lines.length; i++) {
+              const parts = lines[i].split(',').map(s => s.trim().replace(/^"|"$/g, ''));
+              if (parts.length >= 5) {
+                const [name, usn, subject_code, attendance, cie] = parts;
+                const attendancePercent = parseFloat(attendance) || 0;
+                const cieMarksAvg = parseFloat(cie) || 0;
+
+                let status: 'ELIGIBLE' | 'CONDONABLE' | 'DETAINED' = 'ELIGIBLE';
+                if (attendancePercent < 65 || cieMarksAvg < 20) {
+                  status = 'DETAINED';
+                } else if (attendancePercent < 75) {
+                  status = 'CONDONABLE';
+                }
+
+                // Auto-detect dept from subject_code if possible (e.g. ME, CS)
+                let dept = 'General';
+                if (subject_code.includes('CS')) dept = 'CSE';
+                else if (subject_code.includes('ME')) dept = 'ME';
+                else if (subject_code.includes('CV')) dept = 'CV';
+                else if (subject_code.includes('EC')) dept = 'ECE';
+
+                // Guess semester
+                let sem = '5th Sem'; // default
+                const codeMatch = subject_code.match(/\d{2}[A-Z]{2}(\d)/);
+                if (codeMatch) {
+                    sem = `${codeMatch[1]}th Sem`;
+                    if (codeMatch[1] === '1') sem = '1st Sem';
+                    if (codeMatch[1] === '2') sem = '2nd Sem';
+                    if (codeMatch[1] === '3') sem = '3rd Sem';
+                }
+
+                records.push({
+                  id: `imp_${Date.now()}_${i}`,
+                  usn,
+                  name,
+                  email: `${usn.toLowerCase()}@nexai.edu`,
+                  semester: sem,
+                  department: dept,
+                  section: 'A',
+                  subjectCode: subject_code,
+                  subjectTitle: `${subject_code} Subject`,
+                  attendancePercent,
+                  totalClassesHeld: 40,
+                  classesAttended: Math.floor(40 * (attendancePercent / 100)),
+                  cieMarksAvg,
+                  status,
+                  hasFeeDues: false,
+                });
+              }
+            }
+            setTimeout(() => {
+                setPreviewParsed(records);
+                setIsProcessing(false);
+            }, 500);
+          } else {
+            setIsProcessing(false);
+            toast.error("CSV must contain headers and data rows");
+          }
+        }
+      };
+      reader.onerror = () => {
+        setIsProcessing(false);
+        toast.error("Error reading file");
+      }
+      reader.readAsText(file);
+    }
   };
 
   const handleConfirmImport = () => {
@@ -73,6 +103,23 @@ export const CSVUploadModal: React.FC<CSVUploadModalProps> = ({ onImportStudents
       onImportStudents(previewParsed);
       onClose();
     }
+  };
+
+  const handleDownloadTemplate = () => {
+    // Determine subject codes based on department if possible
+    // Use user context or generic if not available
+    const deptPrefix = 'ME'; // Assuming this is for ME since they had the issue, but could be dynamic
+    var csvContent = `name,usn,subject_code,attendance,cie\n"Alice Smith",1RV20ME001,ME201,85.5,42\n"Bob Jones",1RV20ME002,ME201,65.0,30`;
+    var blob = new Blob([csvContent], { type: 'text/csv' });
+    var url = window.URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'eligibility_import_template.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+    toast.success('CSV Template downloaded!');
   };
 
   return (
@@ -158,39 +205,67 @@ export const CSVUploadModal: React.FC<CSVUploadModalProps> = ({ onImportStudents
         {/* Body */}
         <div style={{ padding: '26px 30px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
           {/* Drag & Drop Area */}
-          <div style={{
-            border: '2px dashed #3b82f6',
-            background: '#f8fafc',
-            borderRadius: '14px',
-            padding: '30px',
-            textAlign: 'center',
-            cursor: 'pointer',
-          }}>
+          <input 
+            type="file" 
+            accept=".csv" 
+            ref={fileInputRef} 
+            style={{ display: 'none' }} 
+            onChange={handleFileChange} 
+          />
+          <div 
+            style={{
+              border: '2px dashed #3b82f6',
+              background: '#f8fafc',
+              borderRadius: '14px',
+              padding: '30px',
+              textAlign: 'center',
+              cursor: 'pointer',
+            }}
+            onClick={() => fileInputRef.current?.click()}
+          >
             <FileText size={36} color="#3b82f6" style={{ margin: '0 auto 10px auto' }} />
             <h4 style={{ margin: '0 0 4px 0', fontSize: '0.95rem', fontWeight: 800, color: 'var(--color-text-primary)' }}>
-              {selectedFileName}
+              {selectedFileName || 'Click to select CSV file'}
             </h4>
             <p style={{ margin: '0 0 14px 0', fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
-              Supports CSV, XLSX containing columns: [USN, Student_Name, Classes_Held, Classes_Attended, CIE_Score]
+              Supports CSV containing columns: [name, usn, subject_code, attendance, cie]
             </p>
 
-            <button
-              type="button"
-              onClick={handleSimulateParse}
-              disabled={isProcessing}
-              style={{
-                padding: '8px 20px',
-                background: '#3b82f6',
-                color: 'white',
-                border: 'none',
-                borderRadius: '8px',
-                fontSize: '0.8rem',
-                fontWeight: 700,
-                cursor: 'pointer',
-              }}
-            >
-              {isProcessing ? 'Validating & Parsing Data...' : 'Parse & Validate Records'}
-            </button>
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '12px' }} onClick={e => e.stopPropagation()}>
+              <button
+                type="button"
+                onClick={handleDownloadTemplate}
+                style={{
+                  padding: '8px 20px',
+                  background: 'white',
+                  color: '#3b82f6',
+                  border: '1.5px solid #3b82f6',
+                  borderRadius: '8px',
+                  fontSize: '0.8rem',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                Download Template
+              </button>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isProcessing}
+                style={{
+                  padding: '8px 20px',
+                  background: '#3b82f6',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '0.8rem',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                {isProcessing ? 'Validating & Parsing Data...' : 'Browse File'}
+              </button>
+            </div>
           </div>
 
           {/* Parsed Preview Table */}

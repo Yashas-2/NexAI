@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../core/theme/app_theme.dart';
-import '../../models/student_models.dart';
-import '../../mock_data.dart';
+import '../../services/api_service.dart';
 
 class CoursesAttendanceCieScreen extends StatefulWidget {
   const CoursesAttendanceCieScreen({super.key});
@@ -13,15 +12,33 @@ class CoursesAttendanceCieScreen extends StatefulWidget {
 
 class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen> {
   String _selectedFilter = 'ALL';
-  late List<CourseAttendanceCieItem> _courses;
+  List<dynamic> _courses = [];
+  bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    _courses = mockRegisteredCourses;
+    _fetchCourses();
   }
 
-  void _openCourseDetailsModal(CourseAttendanceCieItem course) {
+  Future<void> _fetchCourses() async {
+    try {
+      final data = await ApiService.get('/student/portal/my_enrollments/');
+      setState(() {
+        _courses = data is List ? data : [];
+        _isLoading = false;
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to load courses: $e'), backgroundColor: Colors.red),
+        );
+      }
+      setState(() => _isLoading = false);
+    }
+  }
+
+  void _openCourseDetailsModal(dynamic course) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -53,11 +70,11 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          '${course.courseCode}: ${course.courseTitle}',
+                          '${course['subject_code']}: ${course['subject_title']}',
                           style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 16),
                         ),
                         Text(
-                          'Instructor: ${course.facultyName}',
+                          'Instructor: TBA',
                           style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
                         ),
                       ],
@@ -93,16 +110,16 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              Text('Classes Attended: ${course.attendedClasses} / ${course.totalClasses}', style: const TextStyle(fontWeight: FontWeight.w700)),
-                              Text('${course.attendancePercentage.toStringAsFixed(1)}%', style: const TextStyle(fontWeight: FontWeight.w900, color: AppTheme.accentGreen, fontSize: 16)),
+                              Text('Classes Attended: ${course['attended_classes'] ?? 0} / ${course['total_classes'] ?? 0}', style: const TextStyle(fontWeight: FontWeight.w700)),
+                              Text('${(course['attendance_percentage'] ?? 100.0).toStringAsFixed(1)}%', style: const TextStyle(fontWeight: FontWeight.w900, color: AppTheme.accentGreen, fontSize: 16)),
                             ],
                           ),
                           const SizedBox(height: 10),
                           LinearProgressIndicator(
-                            value: course.attendancePercentage / 100,
+                            value: (course['attendance_percentage'] ?? 100.0) / 100,
                             backgroundColor: Colors.grey.shade200,
                             valueColor: AlwaysStoppedAnimation<Color>(
-                              course.attendancePercentage >= 85 ? AppTheme.accentGreen : (course.attendancePercentage >= 75 ? AppTheme.accentAmber : AppTheme.accentRed),
+                              (course['attendance_percentage'] ?? 100.0) >= 85 ? AppTheme.accentGreen : ((course['attendance_percentage'] ?? 100.0) >= 75 ? AppTheme.accentAmber : AppTheme.accentRed),
                             ),
                             minHeight: 8,
                             borderRadius: BorderRadius.circular(4),
@@ -122,13 +139,13 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                     const SizedBox(height: 20),
 
                     // CIE Component Breakdown
-                    Text('CIE Internal Assessment Breakdown (Max 50 M)', style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 14)),
+                    Text('CIE Internal Assessment (Max 50 M)', style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 14)),
                     const SizedBox(height: 10),
 
-                    _buildCieRow('Internal Assessment Test 1 (IAT-1)', '${course.cie1Marks} / 20.0 M', 'Conducted on July 10, 2026'),
-                    _buildCieRow('Internal Assessment Test 2 (IAT-2)', '${course.cie2Marks} / 20.0 M', 'Conducted on August 04, 2026'),
-                    _buildCieRow('Internal Assessment Test 3 (IAT-3)', '${course.cie3Marks} / 20.0 M', 'Conducted on August 22, 2026'),
-                    _buildCieRow('Lab Practical / Assignment / Quiz', '${course.assignmentMarks} / 10.0 M', 'Evaluated continuously'),
+                    _buildCieRow('Internal Assessment Test 1 (IAT-1)', '— / 20.0 M', 'Conducted by faculty'),
+                    _buildCieRow('Internal Assessment Test 2 (IAT-2)', '— / 20.0 M', 'Conducted by faculty'),
+                    _buildCieRow('Internal Assessment Test 3 (IAT-3)', '— / 20.0 M', 'Conducted by faculty'),
+                    _buildCieRow('Lab / Assignment / Quiz', '— / 10.0 M', 'Evaluated continuously'),
 
                     const SizedBox(height: 14),
 
@@ -149,7 +166,10 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                               Text('(Best 2 Tests + Lab/Assignment)', style: TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
                             ],
                           ),
-                          Text('${course.totalCieMarks} / 50.0 M', style: const TextStyle(fontWeight: FontWeight.w900, color: AppTheme.primaryDark, fontSize: 18)),
+                          Text(
+                            '${course['cie_status'] ?? 'TBA'}',
+                            style: const TextStyle(color: AppTheme.primaryDark, fontWeight: FontWeight.w900, fontSize: 16),
+                          ),
                         ],
                       ),
                     ),
@@ -168,20 +188,20 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text('TARGETING GRADE S (90–100 Marks):', style: TextStyle(color: Color(0xFF4ADE80), fontWeight: FontWeight.w800, fontSize: 10)),
+                          const Text('TARGETING GRADE S (≥90):', style: TextStyle(color: Color(0xFF4ADE80), fontWeight: FontWeight.w800, fontSize: 10)),
                           const SizedBox(height: 4),
                           Text(
-                            'Need ${(90 - course.totalCieMarks).clamp(0, 50).toStringAsFixed(1)} / 50 M in SEE Theory Exam',
+                            'Score ≥ ${90 > (course['cie_status'] == 'TBA' ? 0 : 40) ? 90 - (0) : 50} / 100 in SEE',
                             style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 14),
                           ),
                           const SizedBox(height: 8),
                           const Divider(color: Colors.white24, height: 1),
                           const SizedBox(height: 8),
-                          const Text('TARGETING GRADE A (80–89 Marks):', style: TextStyle(color: Color(0xFF93C5FD), fontWeight: FontWeight.w800, fontSize: 10)),
+                          const Text('TARGETING GRADE D (≥50):', style: TextStyle(color: Color(0xFF93C5FD), fontWeight: FontWeight.w800, fontSize: 10)),
                           const SizedBox(height: 4),
-                          Text(
-                            'Need ${(80 - course.totalCieMarks).clamp(0, 50).toStringAsFixed(1)} / 50 M in SEE Theory Exam',
-                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 14),
+                          const Text(
+                            'Score ≥ 50 / 100 in SEE',
+                            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 14),
                           ),
                         ],
                       ),
@@ -231,46 +251,36 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
 
   @override
   Widget build(BuildContext context) {
-    final filtered = _courses.where((c) {
-      if (_selectedFilter == 'THEORY') return !c.courseCode.contains('L');
-      if (_selectedFilter == 'LAB') return c.courseCode.contains('L');
-      return true;
-    }).toList();
-
-    // Calculate aggregated attendance
-    int totalAttended = 0;
-    int totalConducted = 0;
-    double totalCieSum = 0;
-
-    for (var c in _courses) {
-      totalAttended += c.attendedClasses;
-      totalConducted += c.totalClasses;
-      totalCieSum += c.totalCieMarks;
+    if (_isLoading) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
     }
 
-    final aggregateAttendance = totalConducted > 0 ? (totalAttended / totalConducted) * 100 : 0.0;
-    final averageCie = _courses.isNotEmpty ? totalCieSum / _courses.length : 0.0;
+    final filteredCourses = _courses;
+    final avgAttendance = _courses.isEmpty ? 0.0 : _courses.map<double>((c) => (c['attendance_percentage'] ?? 100.0) as double).reduce((a, b) => a + b) / _courses.length;
 
     return Scaffold(
       backgroundColor: AppTheme.bgBase,
       appBar: AppBar(
-        title: const Text('Courses, Attendance & CIE'),
+        title: const Text('Enrollments & Attendance'),
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.only(left: 16, right: 16, top: 16, bottom: 96),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ── Top Summary Radar Card ──
+            // Metrics Header Banner
             Container(
-              padding: const EdgeInsets.all(18),
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 18),
               decoration: BoxDecoration(
                 gradient: const LinearGradient(
                   colors: [Color(0xFF0F172A), Color(0xFF1E293B)],
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                 ),
-                borderRadius: BorderRadius.circular(20),
+                borderRadius: BorderRadius.circular(24),
                 boxShadow: [
                   BoxShadow(
                     color: Colors.black.withValues(alpha: 0.1),
@@ -279,50 +289,29 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                   ),
                 ],
               ),
-              child: Column(
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('SEMESTER ATTENDANCE', style: TextStyle(color: Colors.white60, fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 0.5)),
-                          const SizedBox(height: 4),
-                          Text('${aggregateAttendance.toStringAsFixed(1)}%', style: const TextStyle(color: Color(0xFF4ADE80), fontWeight: FontWeight.w900, fontSize: 26)),
-                          const SizedBox(height: 2),
-                          Text('$totalAttended / $totalConducted Total Sessions', style: const TextStyle(color: Colors.white70, fontSize: 11)),
-                        ],
-                      ),
-                      Container(
-                        height: 50,
-                        width: 1,
-                        color: Colors.white24,
-                      ),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('AVERAGE CIE INTERNAL', style: TextStyle(color: Colors.white60, fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 0.5)),
-                          const SizedBox(height: 4),
-                          Text('${averageCie.toStringAsFixed(1)} / 50', style: const TextStyle(color: Color(0xFF93C5FD), fontWeight: FontWeight.w900, fontSize: 26)),
-                          const SizedBox(height: 2),
-                          const Text('Passing: 20/50 M', style: TextStyle(color: Colors.white70, fontSize: 11)),
-                        ],
-                      ),
+                      const Text('AVG. ATTENDANCE', style: TextStyle(color: Colors.white70, fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 0.5)),
+                      const SizedBox(height: 4),
+                      Text('${avgAttendance.toStringAsFixed(1)}%', style: TextStyle(color: avgAttendance >= 85 ? const Color(0xFF4ADE80) : Colors.amber, fontWeight: FontWeight.w900, fontSize: 28)),
                     ],
                   ),
-                  const SizedBox(height: 14),
-                  const Divider(color: Colors.white12, height: 1),
-                  const SizedBox(height: 10),
-                  const Row(
-                    children: [
-                      Icon(Icons.verified_user, color: Color(0xFF4ADE80), size: 14),
-                      SizedBox(width: 6),
-                      Text(
-                        'Exam Eligibility: 100% Cleared (All Courses Above 75%)',
-                        style: TextStyle(color: Color(0xFF4ADE80), fontWeight: FontWeight.w700, fontSize: 11),
-                      ),
-                    ],
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Column(
+                      children: [
+                        const Text('Total Credits', style: TextStyle(color: Colors.white70, fontSize: 10, fontWeight: FontWeight.w600)),
+                        Text('${_courses.length * 4}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 16)),
+                      ],
+                    ),
                   ),
                 ],
               ),
@@ -330,23 +319,16 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
 
             const SizedBox(height: 18),
 
-            // ── Filter Segment Buttons ──
-            Row(
-              children: [
-                _buildFilterChip('ALL', 'All Courses (${_courses.length})'),
-                const SizedBox(width: 8),
-                _buildFilterChip('THEORY', 'Theory (5)'),
-                const SizedBox(width: 8),
-                _buildFilterChip('LAB', 'Lab (1)'),
-              ],
-            ),
-
-            const SizedBox(height: 14),
-
             // ── Registered Courses List ──
-            ...filtered.map((course) {
-              final isAbove85 = course.attendancePercentage >= 85.0;
-              final isAbove75 = course.attendancePercentage >= 75.0;
+            if (filteredCourses.isEmpty)
+               const Text('No enrollments found.', style: TextStyle(color: Colors.red)),
+
+            ...filteredCourses.map((course) {
+              final attended = course['attended_classes'] ?? 0;
+              final total = course['total_classes'] ?? 0;
+              final attPct = (course['attendance_percentage'] ?? 100.0) as double;
+              final isAbove85 = attPct >= 85;
+              final isAbove75 = attPct >= 75;
 
               return InkWell(
                 onTap: () => _openCourseDetailsModal(course),
@@ -377,13 +359,13 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  '${course.courseCode}: ${course.courseTitle}',
+                                  '${course['subject_code']}: ${course['subject_title']}',
                                   style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 14),
                                 ),
                                 const SizedBox(height: 2),
-                                Text(
-                                  course.facultyName,
-                                  style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
+                                const Text(
+                                  'Instructor: TBA',
+                                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 11),
                                 ),
                               ],
                             ),
@@ -394,9 +376,9 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                               color: AppTheme.primaryLight,
                               borderRadius: BorderRadius.circular(6),
                             ),
-                            child: Text(
-                              '${course.credits} Credits',
-                              style: const TextStyle(color: AppTheme.primaryDark, fontWeight: FontWeight.w800, fontSize: 11),
+                            child: const Text(
+                              '4 Credits',
+                              style: TextStyle(color: AppTheme.primaryDark, fontWeight: FontWeight.w800, fontSize: 11),
                             ),
                           ),
                         ],
@@ -419,7 +401,7 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                                   children: [
                                     const Text('Attendance:', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary, fontWeight: FontWeight.w600)),
                                     Text(
-                                      '${course.attendancePercentage.toStringAsFixed(1)}%',
+                                      '${attPct.toStringAsFixed(1)}%',
                                       style: TextStyle(
                                         fontWeight: FontWeight.w900,
                                         fontSize: 12,
@@ -430,7 +412,7 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                                 ),
                                 const SizedBox(height: 6),
                                 LinearProgressIndicator(
-                                  value: course.attendancePercentage / 100,
+                                  value: attPct / 100,
                                   backgroundColor: Colors.grey.shade200,
                                   valueColor: AlwaysStoppedAnimation<Color>(
                                     isAbove85 ? AppTheme.accentGreen : (isAbove75 ? AppTheme.accentAmber : AppTheme.accentRed),
@@ -439,7 +421,7 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                                   borderRadius: BorderRadius.circular(3),
                                 ),
                                 const SizedBox(height: 4),
-                                Text('${course.attendedClasses}/${course.totalClasses} classes attended', style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+                                Text('$attended/$total classes attended', style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
                               ],
                             ),
                           ),
@@ -457,9 +439,9 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                   children: [
                                     const Text('CIE Score:', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary, fontWeight: FontWeight.w600)),
-                                    Text(
-                                      '${course.totalCieMarks} / 50',
-                                      style: const TextStyle(
+                                    const Text(
+                                      'TBA / 50',
+                                      style: TextStyle(
                                         fontWeight: FontWeight.w900,
                                         fontSize: 12,
                                         color: AppTheme.accentBlue,
@@ -469,7 +451,7 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                                 ),
                                 const SizedBox(height: 6),
                                 LinearProgressIndicator(
-                                  value: (course.totalCieMarks / 50.0).clamp(0.0, 1.0),
+                                  value: 0.0,
                                   backgroundColor: Colors.grey.shade200,
                                   valueColor: const AlwaysStoppedAnimation<Color>(AppTheme.accentBlue),
                                   minHeight: 6,

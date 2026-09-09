@@ -1,8 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../core/theme/app_theme.dart';
-import '../../models/student_models.dart';
-import '../../mock_data.dart';
+import '../../services/api_service.dart';
 
 class ResultsLedgerScreen extends StatefulWidget {
   const ResultsLedgerScreen({super.key});
@@ -12,26 +11,47 @@ class ResultsLedgerScreen extends StatefulWidget {
 }
 
 class _ResultsLedgerScreenState extends State<ResultsLedgerScreen> {
-  late List<ExamResultItem> _results;
+  List<dynamic> _results = [];
+  dynamic _profile;
+  bool _isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    _results = mockExamResults;
+    _fetchData();
   }
 
-  void _applyRevaluation(ExamResultItem item) {
+  Future<void> _fetchData() async {
+    try {
+      final resultsData = await ApiService.get('/student/portal/my_results/');
+      final profileData = await ApiService.get('/student/portal/my_profile/');
+      setState(() {
+        _results = resultsData is List ? resultsData : [];
+        _profile = profileData;
+        _isLoading = false;
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to load results: $e'), backgroundColor: Colors.red),
+        );
+      }
+      setState(() => _isLoading = false);
+    }
+  }
+
+  void _applyRevaluation(dynamic item) {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text('Apply for Re-evaluation (${item.courseCode})'),
+        title: Text('Apply for Re-evaluation (${item['subject_code'] ?? item['subject']})'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Course: ${item.courseTitle}'),
+            Text('Course: ${item['subject_name'] ?? item['subject']}'),
             const SizedBox(height: 8),
-            Text('Current Marks: ${item.totalMarks} / 100 (Grade: ${item.gradeLetter})', style: const TextStyle(fontWeight: FontWeight.w700)),
+            Text('Current Marks: ${item['total_marks'] ?? 'N/A'} (Grade: ${item['grade'] ?? 'N/A'})', style: const TextStyle(fontWeight: FontWeight.w700)),
             const SizedBox(height: 12),
             const Text('Official Re-evaluation & Photocopy Processing Fee: ₹500', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
           ],
@@ -44,13 +64,10 @@ class _ResultsLedgerScreenState extends State<ResultsLedgerScreen> {
           ElevatedButton(
             onPressed: () {
               Navigator.pop(context);
-              setState(() {
-                _results = _results.map((r) => r.courseCode == item.courseCode ? r.copyWith(isRevaluationApplied: true) : r).toList();
-              });
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
                   backgroundColor: AppTheme.primaryDark,
-                  content: Text('✓ Re-evaluation application submitted for ${item.courseCode}'),
+                  content: Text('Re-evaluation application submitted for ${item['subject_code'] ?? item['subject']}'),
                 ),
               );
             },
@@ -62,7 +79,7 @@ class _ResultsLedgerScreenState extends State<ResultsLedgerScreen> {
     );
   }
 
-  void _openScriptScans(ExamResultItem item) {
+  void _openScriptScans(dynamic item) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -89,8 +106,8 @@ class _ResultsLedgerScreenState extends State<ResultsLedgerScreen> {
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Evaluated Script: ${item.courseCode}', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
-                      Text('${item.courseTitle} (${item.scriptPagesCount} Scanned Pages)', style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
+                      Text('Evaluated Script: ${item['subject_code'] ?? item['subject']}', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+                      Text('${item['subject_name'] ?? item['subject']} — ${item['exam_session_name'] ?? ''}', style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
                     ],
                   ),
                   IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close)),
@@ -100,49 +117,43 @@ class _ResultsLedgerScreenState extends State<ResultsLedgerScreen> {
             const Divider(height: 1),
 
             Expanded(
-              child: ListView.separated(
+              child: ListView(
                 padding: const EdgeInsets.all(16),
-                itemCount: item.scriptPagesCount,
-                separatorBuilder: (context, i) => const SizedBox(height: 12),
-                itemBuilder: (context, i) {
-                  return Container(
-                    height: 280,
+                children: [
+                  // Marks breakdown
+                  _buildMarkRow('CIE Marks', '${item['cie_marks'] ?? 0} / 50'),
+                  const SizedBox(height: 8),
+                  _buildMarkRow('SEE Marks', '${item['see_marks'] ?? '—'} / 100'),
+                  const SizedBox(height: 8),
+                  _buildMarkRow('Total Marks', '${item['total_marks'] ?? '—'} / 150'),
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.all(14),
                     decoration: BoxDecoration(
-                      color: AppTheme.bgBase,
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: AppTheme.cardBorder),
+                      color: (item['grade'] == 'F')
+                          ? AppTheme.accentRed.withValues(alpha: 0.1)
+                          : AppTheme.accentGreen.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: (item['grade'] == 'F') ? AppTheme.accentRed : AppTheme.accentGreen,
+                      ),
                     ),
-                    child: Stack(
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Center(
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              const Icon(Icons.description, size: 48, color: AppTheme.textMuted),
-                              const SizedBox(height: 8),
-                              Text('Scanned Page ${i + 1} of ${item.scriptPagesCount}', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13)),
-                              const SizedBox(height: 4),
-                              const Text('Examiner Marks & AI Step Annotation Applied', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
-                            ],
-                          ),
-                        ),
-                        Positioned(
-                          top: 12,
-                          right: 12,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: AppTheme.accentGreen.withValues(alpha: 0.2),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: AppTheme.accentGreen.withValues(alpha: 0.5)),
-                            ),
-                            child: const Text('Q-Marks: +8/10 M ✓', style: TextStyle(color: AppTheme.accentGreen, fontWeight: FontWeight.w900, fontSize: 11)),
+                        const Text('Grade', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
+                        Text(
+                          '${item['grade'] ?? 'N/A'}',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            fontSize: 24,
+                            color: (item['grade'] == 'F') ? AppTheme.accentRed : AppTheme.accentGreen,
                           ),
                         ),
                       ],
                     ),
-                  );
-                },
+                  ),
+                ],
               ),
             ),
           ],
@@ -151,9 +162,31 @@ class _ResultsLedgerScreenState extends State<ResultsLedgerScreen> {
     );
   }
 
+  Widget _buildMarkRow(String label, String value) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: AppTheme.bgBase,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.cardBorder),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13, color: AppTheme.textSecondary)),
+          Text(value, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 14)),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final profile = mockStudentProfile;
+    if (_isLoading) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
 
     return Scaffold(
       backgroundColor: AppTheme.bgBase,
@@ -183,9 +216,9 @@ class _ResultsLedgerScreenState extends State<ResultsLedgerScreen> {
                       children: [
                         const Text('CUMULATIVE CGPA', style: TextStyle(color: Colors.white60, fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 0.5)),
                         const SizedBox(height: 6),
-                        Text('${profile.cgpa}', style: const TextStyle(color: Color(0xFF4ADE80), fontWeight: FontWeight.w900, fontSize: 26)),
+                        Text('${_profile?['cgpa'] ?? 'N/A'}', style: const TextStyle(color: Color(0xFF4ADE80), fontWeight: FontWeight.w900, fontSize: 26)),
                         const SizedBox(height: 4),
-                        const Text('All 6 Semesters', style: TextStyle(color: Colors.white70, fontSize: 11)),
+                        Text(_profile != null ? 'Semester ${_profile['semester'] ?? ''}' : 'No results yet', style: const TextStyle(color: Colors.white70, fontSize: 11)),
                       ],
                     ),
                   ),
@@ -204,9 +237,9 @@ class _ResultsLedgerScreenState extends State<ResultsLedgerScreen> {
                       children: [
                         const Text('LATEST SGPA', style: TextStyle(color: AppTheme.primaryDark, fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 0.5)),
                         const SizedBox(height: 6),
-                        Text('${profile.latestSgpa}', style: const TextStyle(color: AppTheme.primaryDark, fontWeight: FontWeight.w900, fontSize: 26)),
+                        Text('${_profile?['latestSgpa'] ?? 'N/A'}', style: const TextStyle(color: AppTheme.primaryDark, fontWeight: FontWeight.w900, fontSize: 26)),
                         const SizedBox(height: 4),
-                        const Text('Fall Semester 2026', style: TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
+                        Text(_profile != null ? '${_profile['name'] ?? ''} — ${_profile['usn'] ?? ''}' : 'No results yet', style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
                       ],
                     ),
                   ),
@@ -225,6 +258,7 @@ class _ResultsLedgerScreenState extends State<ResultsLedgerScreen> {
               ],
             ),
             const SizedBox(height: 12),
+            if (_results.isEmpty) const Text('No results published yet.', style: TextStyle(color: Colors.red)),
 
             ..._results.map((res) {
               return Container(
@@ -245,23 +279,26 @@ class _ResultsLedgerScreenState extends State<ResultsLedgerScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text('${res.courseCode}: ${res.courseTitle}', style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 14)),
-                              Text('${res.credits} Credits • CIE: ${res.cieMarks}/50 | SEE: ${res.seeMarks}/50', style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
+                              Text('${res['subject_code'] ?? res['subject']}: ${res['subject_name'] ?? ''}', style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 14)),
+                              Text('CIE: ${res['cie_marks'] ?? 0}/50 | SEE: ${res['see_marks'] ?? '—'}/100', style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
                             ],
                           ),
                         ),
                         Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          width: 48,
+                          height: 48,
                           decoration: BoxDecoration(
-                            color: res.gradeLetter == 'S' ? const Color(0xFFDCFCE7) : const Color(0xFFEFF6FF),
-                            borderRadius: BorderRadius.circular(8),
+                            color: res['grade'] == 'F' ? Colors.red.withValues(alpha: 0.1) : AppTheme.primary.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(12),
                           ),
-                          child: Text(
-                            'Grade ${res.gradeLetter}',
-                            style: TextStyle(
-                              color: res.gradeLetter == 'S' ? const Color(0xFF166534) : const Color(0xFF1E40AF),
-                              fontWeight: FontWeight.w900,
-                              fontSize: 13,
+                          child: Center(
+                            child: Text(
+                              res['grade'] ?? '?',
+                              style: TextStyle(
+                                fontSize: 22,
+                                fontWeight: FontWeight.w900,
+                                color: res['grade'] == 'F' ? Colors.red : AppTheme.primary,
+                              ),
                             ),
                           ),
                         ),
@@ -273,39 +310,17 @@ class _ResultsLedgerScreenState extends State<ResultsLedgerScreen> {
                     const SizedBox(height: 12),
 
                     Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text('Total: ${res.totalMarks} / 100 Marks', style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 13)),
-
-                        Row(
-                          children: [
-                            OutlinedButton.icon(
-                              onPressed: () => _openScriptScans(res),
-                              icon: const Icon(Icons.menu_book, size: 14),
-                              label: const Text('View Script'),
-                              style: OutlinedButton.styleFrom(
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                textStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            if (res.isRevaluationApplied)
-                              const Chip(
-                                label: Text('Reval Applied ✓', style: TextStyle(fontSize: 10, color: AppTheme.accentPurple, fontWeight: FontWeight.w800)),
-                                backgroundColor: Color(0xFFF3E8FF),
-                                padding: EdgeInsets.zero,
-                              )
-                            else
-                              ElevatedButton(
-                                onPressed: () => _applyRevaluation(res),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: AppTheme.accentBlue,
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                  textStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
-                                ),
-                                child: const Text('Re-evaluate'),
-                              ),
-                          ],
+                        Expanded(
+                          child: Text('${res['exam_session_name'] ?? ''} • ${res['credits'] ?? 4} Credits', style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: () => _openScriptScans(res),
+                            icon: const Icon(Icons.document_scanner_outlined, size: 16),
+                            label: const Text('View Script', style: TextStyle(fontSize: 11)),
+                          ),
                         ),
                       ],
                     ),

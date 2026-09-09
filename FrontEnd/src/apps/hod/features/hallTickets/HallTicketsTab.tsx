@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { HallTicketPreviewModal } from './components/HallTicketPreviewModal';
 import { BatchGenerateModal } from './components/BatchGenerateModal';
+import { api } from '@/services/api';
 
 interface HallTicketsTabProps {
   hallTickets: HallTicketRecord[];
@@ -55,6 +56,20 @@ export const HallTicketsTab: React.FC<HallTicketsTabProps> = ({
   const [previewingTicket, setPreviewingTicket] = useState<HallTicketRecord | null>(null);
   const [isBatchModalOpen, setIsBatchModalOpen] = useState(false);
 
+  const [sessions, setSessions] = useState<{id: string, name: string, selected_slots: string[]}[]>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState<string>('NONE');
+
+  React.useEffect(() => {
+    const fetchSessions = async () => {
+      try {
+        const res = await api.get('/scheduling/sessions/');
+        const data = res.data.results || res.data;
+        setSessions(data);
+      } catch (err) {}
+    };
+    fetchSessions();
+  }, []);
+
   // Helper to look up student eligibility from students state
   const getStudentEligibility = (usn: string) => {
     return students.find(s => s.usn.toLowerCase() === usn.toLowerCase());
@@ -74,7 +89,11 @@ export const HallTicketsTab: React.FC<HallTicketsTabProps> = ({
     ? Object.values(SEMESTER_SUBJECTS).flat()
     : SEMESTER_SUBJECTS[selectedSemester] || [];
 
-  const filteredTickets = hallTickets.filter(t => {
+  const filteredTickets = selectedSessionId === 'NONE' ? [] : hallTickets.filter(t => {
+    // 0. Session Filter (Matches ID or Name)
+    const selectedSession = sessions.find(s => s.id === selectedSessionId);
+    if (selectedSession && t.examSession !== selectedSession.name && t.examSession !== selectedSession.id) return false;
+
     // 1. Semester filter
     if (selectedSemester !== 'ALL' && !t.semester.includes(selectedSemester)) return false;
 
@@ -298,6 +317,32 @@ export const HallTicketsTab: React.FC<HallTicketsTabProps> = ({
             </select>
           </div>
 
+          {/* Exam Schedule / Session Selector */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#D97706', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <Layers size={13} /> Exam Session:
+            </span>
+            <select
+              value={selectedSessionId}
+              onChange={e => setSelectedSessionId(e.target.value)}
+              style={{
+                padding: '8px 12px',
+                borderRadius: '8px',
+                border: '1.5px solid #FCD34D',
+                fontSize: '0.8rem',
+                fontWeight: 700,
+                color: '#92400E',
+                background: '#FFFBEB',
+                cursor: 'pointer',
+              }}
+            >
+              <option value="NONE">-- Select Exam Session --</option>
+              {sessions.map(s => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          </div>
+
           {/* Exam / CIE Series Selector */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#D97706', display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -317,11 +362,8 @@ export const HallTicketsTab: React.FC<HallTicketsTabProps> = ({
                 cursor: 'pointer',
               }}
             >
-              <option value="ALL">All Exam Series (CIE-1, CIE-2, SEE)</option>
-              <option value="CIE-1">CIE-1 (Internal Test 1)</option>
-              <option value="CIE-2">CIE-2 (Internal Test 2)</option>
-              <option value="CIE-3">CIE-3 (Internal Test 3)</option>
-              <option value="SEE_FINAL">SEE (Semester End Final)</option>
+              <option value="ALL">All Exam Series (SEE Final)</option>
+              <option value="SEE_FINAL">Semester End Final Examination (SEE)</option>
             </select>
           </div>
 
@@ -668,6 +710,7 @@ export const HallTicketsTab: React.FC<HallTicketsTabProps> = ({
       {isBatchModalOpen && (
         <BatchGenerateModal
           students={students}
+          sessions={sessions}
           onBatchGenerateSuccess={handleBatchGenerateSuccess}
           onClose={() => setIsBatchModalOpen(false)}
         />

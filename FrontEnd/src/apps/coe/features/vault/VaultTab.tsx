@@ -306,10 +306,10 @@ export const VaultTab: React.FC<VaultTabProps> = () => {
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 800 }}>
-                  {currentSubject.code} — {currentSubject.title}
+                  {currentSubject?.code} — {currentSubject?.title}
                 </h3>
-                <Badge variant={currentSubject.vaultStatus === 'UNSEALED' ? 'success' : currentKey ? 'info' : 'warning'}>
-                  {currentSubject.vaultStatus === 'UNSEALED'
+                <Badge variant={currentSubject?.vaultStatus === 'UNSEALED' ? 'success' : currentKey ? 'info' : 'warning'}>
+                  {currentSubject?.vaultStatus === 'UNSEALED'
                     ? 'UNSEALED & ACTIVE'
                     : currentKey
                     ? 'SESSION KEY ACTIVE'
@@ -318,7 +318,7 @@ export const VaultTab: React.FC<VaultTabProps> = () => {
               </div>
 
               <div style={{ display: 'flex', gap: '18px', marginTop: '6px', fontSize: '0.78rem', color: '#94a3b8' }}>
-                <span>Exam: <strong>{currentSubject.examDate}</strong> ({currentSubject.examSlot})</span>
+                <span>Exam: <strong>{currentSubject?.examDate}</strong> ({currentSubject?.examSlot})</span>
                 <span>•</span>
                 <span>Cipher: <strong style={{ color: currentKey ? '#38bdf8' : '#f59e0b' }}>{currentKey ? currentKey.algorithm.split(' + ')[0] : 'Not Armed'}</strong></span>
                 {currentKey && (
@@ -432,7 +432,7 @@ export const VaultTab: React.FC<VaultTabProps> = () => {
               <PaperCard
                 key={paper.id}
                 paper={paper}
-                isSelectedForExam={currentSubject.activeSelectedSetId === paper.id}
+                isSelectedForExam={currentSubject?.activeSelectedSetId === paper.id}
                 onInspect={p => setInspectingPaper(p)}
                 onSelectForExam={p => {
                   setViewingUnsealedPaper(p);

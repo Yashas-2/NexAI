@@ -1,10 +1,10 @@
 import React from 'react';
 import { Building2, DoorOpen, Users, Accessibility, ArrowRight, ArrowLeft, CheckCircle2, AlertCircle } from 'lucide-react';
 import { ExamHall } from '../../../types/allocationTypes';
-import { MOCK_EXAM_HALLS } from '../../../mock/allocationMockData';
 
 interface Step3HallConfigurationProps {
-  requiredStudents: number;
+  totalCandidates: number;
+  availableRooms: ExamHall[];
   selectedRooms: ExamHall[];
   onRoomsChange: (rooms: ExamHall[]) => void;
   onNext: () => void;
@@ -12,13 +12,14 @@ interface Step3HallConfigurationProps {
 }
 
 export const Step3HallConfiguration: React.FC<Step3HallConfigurationProps> = ({
-  requiredStudents,
+  totalCandidates,
+  availableRooms,
   selectedRooms,
   onRoomsChange,
   onNext,
   onBack,
 }) => {
-  const allHalls = MOCK_EXAM_HALLS;
+  const allHalls = availableRooms;
 
   const toggleRoom = (hall: ExamHall) => {
     const exists = selectedRooms.some(r => r.id === hall.id);
@@ -32,12 +33,12 @@ export const Step3HallConfiguration: React.FC<Step3HallConfigurationProps> = ({
   const autoSelectOptimal = () => {
     // Greedy heuristic: pick largest rooms until capacity + 5% buffer is met
     const sorted = [...allHalls].sort((a, b) => b.capacity - a.capacity);
-    const target = Math.ceil(requiredStudents * 1.05);
+    const target = Math.ceil(totalCandidates * 1.05);
     let accum = 0;
     const chosen: ExamHall[] = [];
     for (const r of sorted) {
       chosen.push(r);
-      accum += r.capacity;
+      accum += r.capacity || 0;
       if (accum >= target) break;
     }
     onRoomsChange(chosen);
@@ -46,16 +47,43 @@ export const Step3HallConfiguration: React.FC<Step3HallConfigurationProps> = ({
   const selectAll = () => onRoomsChange(allHalls);
   const clearAll = () => onRoomsChange([]);
 
-  const currentCapacity = selectedRooms.reduce((sum, r) => sum + r.capacity, 0);
-  const targetWithBuffer = Math.ceil(requiredStudents * 1.05);
-  const isCapacityMet = currentCapacity >= requiredStudents;
+  const currentCapacity = selectedRooms.reduce((sum, r) => sum + (r.capacity || 0), 0);
+  const targetWithBuffer = Math.ceil(totalCandidates * 1.05);
+  const isCapacityMet = currentCapacity >= totalCandidates;
   const isBufferMet = currentCapacity >= targetWithBuffer;
-  const progressPercent = Math.min(100, Math.round((currentCapacity / (requiredStudents || 1)) * 100));
+  const progressPercent = Math.min(100, Math.round((currentCapacity / (totalCandidates || 1)) * 100));
 
   const groundFloorRooms = selectedRooms.filter(r => r.floor === 0);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+
+      {/* ── Guidance Panel ── */}
+      <div style={{
+        background: 'linear-gradient(135deg, #EFF6FF 0%, #DBEAFE 100%)',
+        border: '1.5px solid #BFDBFE',
+        borderRadius: '14px',
+        padding: '18px 22px',
+        display: 'flex',
+        gap: '16px',
+        alignItems: 'flex-start',
+      }}>
+        <div style={{ fontSize: '1.6rem', flexShrink: 0 }}>🏛️</div>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: '0.9rem', color: '#1E40AF', marginBottom: '6px' }}>
+            Step 3 of 5 — Assign Examination Halls
+          </div>
+          <ul style={{ margin: 0, paddingLeft: '18px', color: '#1D4ED8', fontSize: '0.82rem', lineHeight: 1.7 }}>
+            <li>All rooms are loaded from <strong>Resources → Exam Rooms</strong> that you have already configured</li>
+            <li>Click a hall card to <strong>include it</strong> in this session (blue border = selected)</li>
+            <li>The <strong>Capacity Meter</strong> shows total seats vs required — aim for 100%+ with 5% buffer</li>
+            <li>Use <strong>⚡ Auto-Select Optimal</strong> to auto-pick the fewest halls covering all candidates</li>
+            <li><strong>Ground-floor rooms</strong> are auto-tagged for PWD/accessibility students</li>
+            <li>If no rooms appear here, go to <strong>Resources</strong> and add exam rooms first</li>
+          </ul>
+        </div>
+      </div>
+
       {/* Banner */}
       <div style={{
         background: 'linear-gradient(135deg, #0284C7 0%, #0369A1 100%)',
@@ -81,7 +109,7 @@ export const Step3HallConfiguration: React.FC<Step3HallConfigurationProps> = ({
           </div>
         </div>
         <p style={{ margin: 0, fontSize: '0.85rem', opacity: 0.85, maxWidth: '680px' }}>
-          Allocate lecture theatres and examination halls to accommodate {requiredStudents} candidates. Ground-floor halls are automatically tagged for students requiring physical accommodations.
+          Allocate lecture theatres and examination halls to accommodate {totalCandidates} candidates. Ground-floor halls are automatically tagged for students requiring physical accommodations.
         </p>
       </div>
 
@@ -104,7 +132,7 @@ export const Step3HallConfiguration: React.FC<Step3HallConfigurationProps> = ({
               <AlertCircle size={20} color="#F59E0B" />
             )}
             <span style={{ fontWeight: 800, fontSize: '0.95rem', color: '#1E293B' }}>
-              Center Capacity Fulfillment: {currentCapacity} / {requiredStudents} Seats ({progressPercent}%)
+              Center Capacity Fulfillment: {currentCapacity} / {totalCandidates} Seats ({progressPercent}%)
             </span>
           </div>
 
@@ -181,7 +209,7 @@ export const Step3HallConfiguration: React.FC<Step3HallConfigurationProps> = ({
               ? '✓ Target + 5% emergency buffer fully satisfied'
               : isCapacityMet
               ? 'Satisfied, but recommend adding 1 more room for 5% buffer'
-              : `Deficit: ${requiredStudents - currentCapacity} additional seats required`}
+              : `Deficit: ${totalCandidates - currentCapacity} additional seats required`}
           </span>
         </div>
       </div>

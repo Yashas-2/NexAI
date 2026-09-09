@@ -53,13 +53,18 @@ class ProctoringSessionViewSet(viewsets.ModelViewSet):
         The frame is passed to the AI engine for anomaly detection.
         """
         session = self.get_object()
-        
+
         if not session.is_active:
             return Response({"error": "Session is not active."}, status=status.HTTP_400_BAD_REQUEST)
-            
-        # Mocking the image payload. In reality this would be read from request.FILES
-        anomalies = detect_anomalies(b"mock_frame_data")
-        
+
+        # Read actual frame bytes from the uploaded file
+        frame_file = request.FILES.get('frame')
+        if not frame_file:
+            return Response({"error": "No frame file provided. Send the image as 'frame' in multipart/form-data."}, status=status.HTTP_400_BAD_REQUEST)
+
+        frame_bytes = frame_file.read()
+        anomalies = detect_anomalies(frame_bytes)
+
         events_created = []
         for anomaly in anomalies:
             event = ProctoringEvent.objects.create(
@@ -69,7 +74,7 @@ class ProctoringSessionViewSet(viewsets.ModelViewSet):
                 screenshot_url=anomaly['screenshot_url']
             )
             events_created.append(event)
-            
+
         return Response({
             "status": "frame_processed",
             "anomalies_detected": len(events_created)

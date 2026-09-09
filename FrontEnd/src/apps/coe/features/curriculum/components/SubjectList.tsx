@@ -1,16 +1,25 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Badge } from '@/components/ui/Badge';
 import { Users, BookOpen, Layers } from 'lucide-react';
+import { api } from '@/services/api';
 
 interface SubjectListProps {
-  onViewStudents: (code: string, title: string) => void;
+  onViewStudents: (id: string, code: string, title: string) => void;
 }
 
-const subjects = [
-  { code: 'CS101', title: 'Introduction to Computer Science', dept: 'Computer Science', credits: 4, students: 120, status: 'Active' as const },
-  { code: 'CS201', title: 'Data Structures',                  dept: 'Computer Science', credits: 4, students: 85,  status: 'Active' as const },
-  { code: 'CS301', title: 'Operating Systems',                dept: 'Computer Science', credits: 3, students: 110, status: 'Active' as const },
-];
+interface SubjectData {
+  id: string;
+  code: string;
+  name: string;
+  subject_type: string;
+  department_code: string;
+  department_name: string;
+  semester: number;
+  credits: number;
+  batch_year: number;
+  coordinator_name: string | null;
+  is_active: boolean;
+}
 
 const palette = ['#48977f', '#3b82f6', '#8b5cf6'];
 
@@ -70,15 +79,51 @@ const StatCard = ({ icon, label, value, color }: { icon: React.ReactNode; label:
 );
 
 export const SubjectList: React.FC<SubjectListProps> = ({ onViewStudents }) => {
-  const totalStudents = subjects.reduce((sum, s) => sum + s.students, 0);
+  const [subjects, setSubjects] = useState<SubjectData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/scheduling/subjects/')
+      .then(res => {
+        if (cancelled) return;
+        const data = res.data?.results || res.data;
+        setSubjects(Array.isArray(data) ? data : []);
+        setLoading(false);
+      })
+      .catch(err => {
+        if (cancelled) return;
+        console.error('Failed to fetch subjects:', err);
+        setError(err.response?.data?.detail || err.message || 'Failed to load subjects');
+        setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  if (loading) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '60px 20px', color: 'var(--color-text-secondary)' }}>
+        Loading subjects...
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '60px 20px', color: '#ef4444' }}>
+        {error}
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
       {/* Stats */}
       <div style={{ display: 'flex', gap: '16px' }}>
         <StatCard icon={<BookOpen size={20} />} label="Total Subjects"  value={subjects.length} color="#48977f" />
-        <StatCard icon={<Users size={20} />}    label="Total Students"  value={totalStudents}   color="#3b82f6" />
-        <StatCard icon={<Layers size={20} />}   label="Departments"     value={1}               color="#ed7245" />
+        <StatCard icon={<Users size={20} />}    label="Coordinators"    value={subjects.filter(s => s.coordinator_name).length}  color="#3b82f6" />
+        <StatCard icon={<Layers size={20} />}   label="Departments"     value={new Set(subjects.map(s => s.department_code)).size}  color="#ed7245" />
       </div>
 
       {/* Subject Cards */}
@@ -86,7 +131,7 @@ export const SubjectList: React.FC<SubjectListProps> = ({ onViewStudents }) => {
         {subjects.map((sub, i) => {
           const color = palette[i % palette.length];
           return (
-            <div key={sub.code} style={{
+            <div key={sub.id} style={{
               background: 'white',
               borderRadius: '12px',
               border: `1px solid ${color}22`,
@@ -116,21 +161,18 @@ export const SubjectList: React.FC<SubjectListProps> = ({ onViewStudents }) => {
 
               {/* Info */}
               <div style={{ flex: 1, position: 'relative', zIndex: 1 }}>
-                <h4 style={{ margin: '0 0 4px 0', fontWeight: 600, fontSize: '0.95rem' }}>{sub.title}</h4>
-                <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>{sub.dept} · {sub.credits} Credits</p>
+                <h4 style={{ margin: '0 0 4px 0', fontWeight: 600, fontSize: '0.95rem' }}>{sub.name}</h4>
+                <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>
+                  {sub.department_name || sub.department_code} · {sub.credits} Credits · Sem {sub.semester}
+                  {sub.coordinator_name && <span> · Coord: {sub.coordinator_name}</span>}
+                </p>
               </div>
 
-              {/* Students */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--color-text-secondary)', fontSize: '0.875rem', position: 'relative', zIndex: 1 }}>
-                <Users size={14} />
-                <span style={{ fontWeight: 600, color: 'var(--color-text-primary)' }}>{sub.students}</span> students
-              </div>
-
-              <Badge variant="success">{sub.status}</Badge>
+              <Badge variant={sub.is_active ? 'success' : 'info'}>{sub.is_active ? 'Active' : 'Inactive'}</Badge>
 
               {/* Action */}
               <button
-                onClick={() => onViewStudents(sub.code, sub.title)}
+                onClick={() => onViewStudents(sub.id, sub.code, sub.name)}
                 style={{
                   background: `${color}15`,
                   border: `1.5px solid ${color}44`,

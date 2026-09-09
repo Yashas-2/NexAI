@@ -39,6 +39,7 @@ class SubjectDTO:
     exam_duration_mins: int
     enrolled_student_ids: list[str] = field(default_factory=list)
     required_capacity: int = 0  # max students in any room needed
+    coordinator_id: str | None = None
 
 
 @dataclass
@@ -281,6 +282,7 @@ class TimetableSolver:
                                 room_id=room.id,
                                 room_name=room.name,
                                 time_slot=slot,
+                                invigilator_id=subject.coordinator_id,
                             )
                         )
                         break  # each subject assigned once
@@ -301,7 +303,8 @@ class TimetableSolver:
 def build_schedule_input_from_orm(exam_session_id: str) -> ScheduleInput:
     """
     Query the database and build a ScheduleInput DTO for the solver.
-    Called from the Celery task.
+    Rooms and fallback subjects are scoped to the session's department(s)
+    so that cross-department leakage is prevented.
     """
     from scheduling.models import (
         ExamSession,
@@ -312,16 +315,40 @@ def build_schedule_input_from_orm(exam_session_id: str) -> ScheduleInput:
     from users.models import User
     from users.constants import UserRole
     from datetime import time as dt_time
+    from django.db.models import Q
 
-    session = ExamSession.objects.get(id=exam_session_id)
+    session = ExamSession.objects.select_related("created_by__department").get(id=exam_session_id)
 
-    # Fetch all subjects for this session's semester
-    subjects_qs = Subject.objects.filter(
-        semester=session.semester,
-        is_active=True,
-    ).prefetch_related("student_enrollments")
+    # ── Determine the department scope for this session ──────────────────────
+    # Use the explicit departments list on the session; fall back to creator's dept.
+    dept_codes: list[str] = session.departments or []
+    if not dept_codes and session.created_by:
+        creator_dept = getattr(session.created_by, 'department', None)
+        if creator_dept:
+            dept_codes = [creator_dept.code]
 
-    rooms_qs = Room.objects.filter(is_active=True).order_by("-exam_capacity")
+    # ── Subjects ─────────────────────────────────────────────────────────────
+    # Use the M2M subjects linked to the session first.
+    subjects_qs = session.subjects.filter(is_active=True).prefetch_related("student_enrollments")
+
+    # Fallback: if no subjects are linked, pull by semester AND department.
+    if not subjects_qs.exists():
+        fallback_filter = Q(semester=session.semester, is_active=True)
+        if dept_codes:
+            fallback_filter &= Q(department__code__in=dept_codes)
+        subjects_qs = Subject.objects.filter(fallback_filter).prefetch_related("student_enrollments")
+
+    # ── Rooms ─────────────────────────────────────────────────────────────────
+    # Include rooms belonging to the session's department(s) PLUS shared/common
+    # rooms (department=NULL).  CoE-level sessions (no dept_codes) get all rooms.
+    if dept_codes:
+        rooms_qs = Room.objects.filter(
+            is_active=True
+        ).filter(
+            Q(department__code__in=dept_codes) | Q(department__isnull=True)
+        ).order_by("-exam_capacity")
+    else:
+        rooms_qs = Room.objects.filter(is_active=True).order_by("-exam_capacity")
 
     invigilators_qs = User.objects.filter(
         role__in=[UserRole.INVIGILATOR, UserRole.EVALUATOR],
@@ -354,12 +381,23 @@ def build_schedule_input_from_orm(exam_session_id: str) -> ScheduleInput:
     subject_dtos: list[SubjectDTO] = []
     student_enrollments: dict[str, set[str]] = {}
 
+    from eligibility.models import StudentEligibility
     for subj in subjects_qs:
+        # First check eligible students for this subject and session
         enrolled = list(
-            StudentSubjectEnrollment.objects.filter(
-                subject=subj, exam_session=session
+            StudentEligibility.objects.filter(
+                subject=subj, exam_session=session, is_eligible=True
             ).values_list("student__user__id", flat=True)
         )
+        
+        # Fallback to enrollments if no eligibility records exist
+        if not enrolled:
+            enrolled = list(
+                StudentSubjectEnrollment.objects.filter(
+                    subject=subj, exam_session=session
+                ).values_list("student__user__id", flat=True)
+            )
+
         for sid in enrolled:
             student_enrollments.setdefault(str(sid), set()).add(str(subj.id))
 
@@ -370,6 +408,7 @@ def build_schedule_input_from_orm(exam_session_id: str) -> ScheduleInput:
             exam_duration_mins=subj.exam_duration_mins,
             enrolled_student_ids=[str(e) for e in enrolled],
             required_capacity=len(enrolled),
+            coordinator_id=str(subj.coordinator_id) if subj.coordinator_id else None,
         ))
 
     room_dtos = [

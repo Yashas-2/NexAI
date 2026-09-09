@@ -9,6 +9,8 @@ interface HODOverviewTabProps {
   onNavigateToEligibility: () => void;
   onNavigateToHallTickets: () => void;
   onNavigateToFaculty?: () => void;
+  departmentCode?: string;
+  baseStudentsCount?: number;
 }
 
 export const HODOverviewTab: React.FC<HODOverviewTabProps> = ({
@@ -18,6 +20,8 @@ export const HODOverviewTab: React.FC<HODOverviewTabProps> = ({
   onNavigateToEligibility,
   onNavigateToHallTickets,
   onNavigateToFaculty: _onNavigateToFaculty,
+  departmentCode = 'CSE',
+  baseStudentsCount = 0,
 }) => {
   const totalStudents = students.length;
   const eligibleStudents = students.filter(s => s.status === 'ELIGIBLE' || (s.status === 'CONDONABLE' && s.condonationApproved)).length;
@@ -36,14 +40,14 @@ export const HODOverviewTab: React.FC<HODOverviewTabProps> = ({
         {[
           {
             label: 'Total Department Roster',
-            value: `${totalStudents * 60} Students`,
-            desc: 'CSE 3rd, 5th & 7th Semesters',
+            value: `${baseStudentsCount} Students`,
+            desc: `${departmentCode} 3rd, 5th & 7th Semesters`,
             icon: <Users size={20} />,
             color: '#3b82f6',
           },
           {
             label: 'Attendance Eligible',
-            value: `${Math.round((eligibleStudents / totalStudents) * 100)}% Eligible`,
+            value: `${totalStudents > 0 ? Math.round((eligibleStudents / totalStudents) * 100) : 0}% Eligible`,
             desc: `${students.filter(s => s.status === 'DETAINED').length} Students Detained (<75%)`,
             icon: <CheckCircle2 size={20} />,
             color: '#10b981',
@@ -57,7 +61,7 @@ export const HODOverviewTab: React.FC<HODOverviewTabProps> = ({
           },
           {
             label: 'Hall Tickets Dispatched',
-            value: `${hallTickets.length * 140} Issued`,
+            value: `${hallTickets.length} Issued`,
             desc: 'Cryptographically Verified QR',
             icon: <QrCode size={20} />,
             color: '#8b5cf6',

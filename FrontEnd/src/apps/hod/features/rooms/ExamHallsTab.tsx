@@ -1,18 +1,17 @@
 import React, { useState } from 'react';
 import { ExamHall } from '../../types';
 import { Badge } from '@/components/ui/Badge';
+import { api } from '@/services/api';
 import {
   Building,
   Plus,
   Tv,
-  Wind,
-  Layers,
   Users,
-  CheckCircle2,
-  AlertTriangle,
   X,
   Calendar,
-  Grid
+  Grid,
+  Trash2,
+  Pencil
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -23,6 +22,8 @@ interface Props {
 
 export const ExamHallsTab: React.FC<Props> = ({ halls, onUpdateHalls }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [editingHall, setEditingHall] = useState<ExamHall | null>(null);
   const [roomNumber, setRoomNumber] = useState('');
   const [blockName, setBlockName] = useState('Aryabhata Academic Block - 1st Floor');
   const [rowsCount, setRowsCount] = useState(6);
@@ -35,44 +36,126 @@ export const ExamHallsTab: React.FC<Props> = ({ halls, onUpdateHalls }) => {
   const activeRooms = halls.filter(h => h.status === 'ACTIVE').length;
   const cctvRooms = halls.filter(h => h.isCCTVEnabled).length;
 
-  const handleCreateHall = (e: React.FormEvent) => {
+  const handleCreateHall = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!roomNumber.trim()) {
       toast.error('Please specify a room number (e.g. Hall C-103)');
       return;
     }
 
-    const calculatedCapacity = rowsCount * colsCount;
-    const newHall: ExamHall = {
-      id: `HALL-${Date.now().toString().slice(-4)}`,
-      roomNumber: roomNumber.trim(),
-      blockName: blockName.trim(),
-      rowsCount: Number(rowsCount),
-      colsCount: Number(colsCount),
-      capacity: calculatedCapacity,
-      benchType: benchType,
-      isCCTVEnabled: isCCTVEnabled,
-      isAC: isAC,
-      status: 'ACTIVE',
-      lastAnnualAuditDate: new Date().toISOString().split('T')[0],
-    };
+    try {
+      const res = await api.post('/scheduling/rooms/', {
+        name: roomNumber.trim(),
+        building: blockName.trim(),
+        floor: 0,
+        total_capacity: rowsCount * colsCount,
+        exam_capacity: rowsCount * colsCount,
+        has_cctv: isCCTVEnabled,
+        has_wifi: isAC,
+        is_lab: false,
+      });
 
-    onUpdateHalls([...halls, newHall]);
-    toast.success(`Registered ${newHall.roomNumber} with ${calculatedCapacity} seats!`);
-    setIsModalOpen(false);
-    setRoomNumber('');
+      const saved = res.data;
+      const newHall: ExamHall = {
+        id: saved.id,
+        roomNumber: saved.name,
+        blockName: `${saved.building}`,
+        rowsCount: Number(rowsCount),
+        colsCount: Number(colsCount),
+        capacity: saved.exam_capacity,
+        benchType: benchType,
+        isCCTVEnabled: saved.has_cctv,
+        isAC: saved.has_wifi,
+        status: 'ACTIVE',
+        lastAnnualAuditDate: new Date().toISOString().split('T')[0],
+      };
+
+      onUpdateHalls([...halls, newHall]);
+      toast.success(`Registered ${newHall.roomNumber} with ${saved.exam_capacity} seats!`);
+      setIsModalOpen(false);
+      setRoomNumber('');
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Failed to register room');
+    }
   };
 
-  const handleToggleStatus = (id: string) => {
-    const updated = halls.map(h => {
-      if (h.id === id) {
-        const nextStatus = h.status === 'ACTIVE' ? 'MAINTENANCE' : 'ACTIVE';
-        toast.success(`${h.roomNumber} status changed to ${nextStatus}`);
-        return { ...h, status: nextStatus as 'ACTIVE' | 'MAINTENANCE' };
-      }
-      return h;
-    });
-    onUpdateHalls(updated);
+  const handleToggleStatus = async (id: string) => {
+    const hall = halls.find(h => h.id === id);
+    if (!hall) return;
+    const nextStatus = hall.status === 'ACTIVE' ? false : true;
+    try {
+      await api.patch(`/scheduling/rooms/${id}/`, { is_active: nextStatus });
+      const updated = halls.map(h =>
+        h.id === id ? { ...h, status: nextStatus ? 'ACTIVE' : 'MAINTENANCE' as 'ACTIVE' | 'MAINTENANCE' } : h
+      );
+      onUpdateHalls(updated);
+      toast.success(`${hall.roomNumber} ${nextStatus ? 'activated' : 'set to maintenance'}`);
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Failed to update status');
+    }
+  };
+
+  const handleDeleteHall = async (id: string) => {
+    const hall = halls.find(h => h.id === id);
+    if (!hall) return;
+    if (!confirm(`Delete ${hall.roomNumber}? This action cannot be undone.`)) return;
+    try {
+      await api.delete(`/scheduling/rooms/${id}/`);
+      onUpdateHalls(halls.filter(h => h.id !== id));
+      toast.success(`${hall.roomNumber} deleted`);
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Failed to delete room');
+    }
+  };
+
+  const openEditModal = (hall: ExamHall) => {
+    setEditingHall(hall);
+    setRoomNumber(hall.roomNumber);
+    setBlockName(hall.blockName);
+    setRowsCount(hall.rowsCount);
+    setColsCount(hall.colsCount);
+    setBenchType(hall.benchType);
+    setIsCCTVEnabled(hall.isCCTVEnabled);
+    setIsAC(hall.isAC);
+    setIsEditModalOpen(true);
+  };
+
+  const handleUpdateHall = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingHall) return;
+    try {
+      const res = await api.patch(`/scheduling/rooms/${editingHall.id}/`, {
+        name: roomNumber.trim(),
+        building: blockName.trim(),
+        total_capacity: rowsCount * colsCount,
+        exam_capacity: rowsCount * colsCount,
+        has_cctv: isCCTVEnabled,
+        has_wifi: isAC,
+      });
+      const saved = res.data;
+      const updated = halls.map(h => {
+        if (h.id === editingHall.id) {
+          return {
+            ...h,
+            roomNumber: saved.name,
+            blockName: saved.building,
+            rowsCount,
+            colsCount,
+            capacity: saved.exam_capacity,
+            benchType,
+            isCCTVEnabled: saved.has_cctv,
+            isAC: saved.has_wifi,
+          };
+        }
+        return h;
+      });
+      onUpdateHalls(updated);
+      toast.success(`${saved.name} updated`);
+      setIsEditModalOpen(false);
+      setEditingHall(null);
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Failed to update room');
+    }
   };
 
   return (
@@ -306,21 +389,61 @@ export const ExamHallsTab: React.FC<Props> = ({ halls, onUpdateHalls }) => {
                   </td>
 
                   <td style={{ padding: '14px 20px', textAlign: 'right' }}>
-                    <button
-                      onClick={() => handleToggleStatus(hall.id)}
-                      style={{
-                        padding: '5px 12px',
-                        borderRadius: '6px',
-                        border: '1px solid #CBD5E1',
-                        background: 'white',
-                        color: hall.status === 'ACTIVE' ? '#B45309' : '#15803D',
-                        fontSize: '0.75rem',
-                        fontWeight: 700,
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {hall.status === 'ACTIVE' ? 'Set Maintenance' : 'Activate'}
-                    </button>
+                    <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>
+                      <button
+                        onClick={() => openEditModal(hall)}
+                        title="Edit Room"
+                        style={{
+                          padding: '5px 10px',
+                          borderRadius: '6px',
+                          border: '1px solid #CBD5E1',
+                          background: 'white',
+                          color: '#4F46E5',
+                          fontSize: '0.75rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                        }}
+                      >
+                        <Pencil size={12} /> Edit
+                      </button>
+                      <button
+                        onClick={() => handleToggleStatus(hall.id)}
+                        style={{
+                          padding: '5px 10px',
+                          borderRadius: '6px',
+                          border: '1px solid #CBD5E1',
+                          background: 'white',
+                          color: hall.status === 'ACTIVE' ? '#B45309' : '#15803D',
+                          fontSize: '0.75rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {hall.status === 'ACTIVE' ? 'Maintenance' : 'Activate'}
+                      </button>
+                      <button
+                        onClick={() => handleDeleteHall(hall.id)}
+                        title="Delete Room"
+                        style={{
+                          padding: '5px 10px',
+                          borderRadius: '6px',
+                          border: '1px solid #FECDD3',
+                          background: '#FEF2F2',
+                          color: '#DC2626',
+                          fontSize: '0.75rem',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                        }}
+                      >
+                        <Trash2 size={12} /> Delete
+                      </button>
+                    </div>
                   </td>
 
                 </tr>
@@ -386,6 +509,8 @@ export const ExamHallsTab: React.FC<Props> = ({ halls, onUpdateHalls }) => {
                     Hall / Room Number *
                   </label>
                   <input
+                    id="room-number"
+                    name="room-number"
                     type="text"
                     required
                     value={roomNumber}
@@ -400,13 +525,21 @@ export const ExamHallsTab: React.FC<Props> = ({ halls, onUpdateHalls }) => {
                     Campus Block & Floor Location *
                   </label>
                   <input
+                    id="block-name"
+                    name="block-name"
                     type="text"
                     required
+                    list="building-suggestions"
                     value={blockName}
                     onChange={e => setBlockName(e.target.value)}
-                    placeholder="e.g. Aryabhata Academic Block - 1st Floor"
+                    placeholder="e.g. MB Block, Aryabhata Academic Block - 1st Floor"
                     style={{ width: '100%', padding: '10px 12px', borderRadius: '10px', border: '1px solid #CBD5E1', fontSize: '0.85rem', fontWeight: 600, boxSizing: 'border-box' }}
                   />
+                  <datalist id="building-suggestions">
+                    {Array.from(new Set(halls.map(h => h.blockName))).map(name => (
+                      <option key={name} value={name} />
+                    ))}
+                  </datalist>
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
@@ -415,6 +548,8 @@ export const ExamHallsTab: React.FC<Props> = ({ halls, onUpdateHalls }) => {
                       Rows Count *
                     </label>
                     <input
+                      id="rows-count"
+                      name="rows-count"
                       type="number"
                       min="2"
                       max="20"
@@ -430,6 +565,8 @@ export const ExamHallsTab: React.FC<Props> = ({ halls, onUpdateHalls }) => {
                       Columns Count *
                     </label>
                     <input
+                      id="cols-count"
+                      name="cols-count"
                       type="number"
                       min="2"
                       max="20"
@@ -464,6 +601,8 @@ export const ExamHallsTab: React.FC<Props> = ({ halls, onUpdateHalls }) => {
                     Bench Style
                   </label>
                   <select
+                    id="bench-type"
+                    name="bench-type"
                     value={benchType}
                     onChange={e => setBenchType(e.target.value as any)}
                     style={{ width: '100%', padding: '10px 12px', borderRadius: '10px', border: '1px solid #CBD5E1', fontSize: '0.85rem', fontWeight: 700, background: 'white', boxSizing: 'border-box' }}
@@ -476,6 +615,8 @@ export const ExamHallsTab: React.FC<Props> = ({ halls, onUpdateHalls }) => {
                 <div style={{ display: 'flex', gap: '20px', background: '#F8FAFC', padding: '12px 16px', borderRadius: '10px', border: '1px solid #E2E8F0' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8rem', fontWeight: 700, cursor: 'pointer' }}>
                     <input
+                      id="cctv-enabled"
+                      name="cctv-enabled"
                       type="checkbox"
                       checked={isCCTVEnabled}
                       onChange={e => setIsCCTVEnabled(e.target.checked)}
@@ -486,6 +627,8 @@ export const ExamHallsTab: React.FC<Props> = ({ halls, onUpdateHalls }) => {
 
                   <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8rem', fontWeight: 700, cursor: 'pointer' }}>
                     <input
+                      id="is-ac"
+                      name="is-ac"
                       type="checkbox"
                       checked={isAC}
                       onChange={e => setIsAC(e.target.checked)}
@@ -527,6 +670,132 @@ export const ExamHallsTab: React.FC<Props> = ({ halls, onUpdateHalls }) => {
                   }}
                 >
                   Confirm & Save Hall to Registry ✓
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ── Edit Room Modal ── */}
+      {isEditModalOpen && editingHall && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(15, 23, 42, 0.75)',
+          backdropFilter: 'blur(8px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          padding: '1.5rem',
+        }}>
+          <div style={{
+            background: 'white',
+            borderRadius: '20px',
+            maxWidth: '560px',
+            width: '100%',
+            boxShadow: '0 25px 50px -12px rgba(0,0,0,0.35)',
+            border: '1px solid #E2E8F0',
+            overflow: 'hidden',
+          }}>
+            <div style={{
+              padding: '20px 24px',
+              borderBottom: '1px solid #E2E8F0',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              background: '#F8FAFC',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div style={{ width: 36, height: 36, borderRadius: '8px', background: '#EEF2FF', color: '#4F46E5', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Pencil size={20} />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 800, color: '#0F172A' }}>
+                    Edit Exam Hall
+                  </h3>
+                  <p style={{ margin: 0, fontSize: '0.74rem', color: '#64748B' }}>
+                    Update room details for {editingHall.roomNumber}
+                  </p>
+                </div>
+              </div>
+              <button onClick={() => { setIsEditModalOpen(false); setEditingHall(null); }} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#94A3B8' }}>
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleUpdateHall}>
+              <div style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 800, color: '#475569', marginBottom: '6px' }}>
+                    Hall / Room Number *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={roomNumber}
+                    onChange={e => setRoomNumber(e.target.value)}
+                    style={{ width: '100%', padding: '10px 12px', borderRadius: '10px', border: '1px solid #CBD5E1', fontSize: '0.85rem', fontWeight: 700, boxSizing: 'border-box' }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 800, color: '#475569', marginBottom: '6px' }}>
+                    Campus Block & Floor *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={blockName}
+                    onChange={e => setBlockName(e.target.value)}
+                    style={{ width: '100%', padding: '10px 12px', borderRadius: '10px', border: '1px solid #CBD5E1', fontSize: '0.85rem', fontWeight: 600, boxSizing: 'border-box' }}
+                  />
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 800, color: '#475569', marginBottom: '4px' }}>Rows</label>
+                    <input type="number" min="2" max="20" required value={rowsCount} onChange={e => setRowsCount(parseInt(e.target.value) || 2)} style={{ width: '100%', padding: '9px', borderRadius: '8px', border: '1px solid #CBD5E1', fontSize: '0.85rem', fontWeight: 700, boxSizing: 'border-box' }} />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 800, color: '#475569', marginBottom: '4px' }}>Columns</label>
+                    <input type="number" min="2" max="20" required value={colsCount} onChange={e => setColsCount(parseInt(e.target.value) || 2)} style={{ width: '100%', padding: '9px', borderRadius: '8px', border: '1px solid #CBD5E1', fontSize: '0.85rem', fontWeight: 700, boxSizing: 'border-box' }} />
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 800, color: '#475569', marginBottom: '4px' }}>Seats</label>
+                    <div style={{ padding: '9px', borderRadius: '8px', background: '#ECFDF5', border: '1px solid #A7F3D0', color: '#065F46', fontWeight: 800, fontSize: '0.9rem', textAlign: 'center' }}>
+                      {rowsCount * colsCount}
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.75rem', fontWeight: 800, color: '#475569', marginBottom: '6px' }}>Bench Style</label>
+                  <select value={benchType} onChange={e => setBenchType(e.target.value as any)} style={{ width: '100%', padding: '10px 12px', borderRadius: '10px', border: '1px solid #CBD5E1', fontSize: '0.85rem', fontWeight: 700, background: 'white', boxSizing: 'border-box' }}>
+                    <option value="SINGLE_SEATER">Single Seater</option>
+                    <option value="DOUBLE_SEATER">Double Seater</option>
+                  </select>
+                </div>
+
+                <div style={{ display: 'flex', gap: '20px', background: '#F8FAFC', padding: '12px 16px', borderRadius: '10px', border: '1px solid #E2E8F0' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8rem', fontWeight: 700, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={isCCTVEnabled} onChange={e => setIsCCTVEnabled(e.target.checked)} style={{ width: 16, height: 16, accentColor: '#4F46E5' }} />
+                    CCTV
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8rem', fontWeight: 700, cursor: 'pointer' }}>
+                    <input type="checkbox" checked={isAC} onChange={e => setIsAC(e.target.checked)} style={{ width: 16, height: 16, accentColor: '#4F46E5' }} />
+                    AC
+                  </label>
+                </div>
+              </div>
+
+              <div style={{ padding: '16px 24px', borderTop: '1px solid #E2E8F0', display: 'flex', justifyContent: 'flex-end', gap: '10px', background: '#F8FAFC' }}>
+                <button type="button" onClick={() => { setIsEditModalOpen(false); setEditingHall(null); }} style={{ padding: '8px 16px', borderRadius: '8px', border: '1px solid #CBD5E1', background: 'white', color: '#475569', fontWeight: 700, fontSize: '0.82rem', cursor: 'pointer' }}>
+                  Cancel
+                </button>
+                <button type="submit" style={{ padding: '9px 20px', borderRadius: '8px', border: 'none', background: 'linear-gradient(135deg, #4F46E5 0%, #3730A3 100%)', color: 'white', fontWeight: 800, fontSize: '0.82rem', cursor: 'pointer', boxShadow: '0 4px 12px rgba(79,70,229,0.3)' }}>
+                  Save Changes ✓
                 </button>
               </div>
             </form>

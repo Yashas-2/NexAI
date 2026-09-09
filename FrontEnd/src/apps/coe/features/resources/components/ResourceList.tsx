@@ -1,24 +1,33 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Badge } from '@/components/ui/Badge';
-import { DoorOpen, Users, MapPin, CheckCircle, GraduationCap, Cpu } from 'lucide-react';
+import { Button } from '@/components/ui/Button';
+import { DoorOpen, Users, MapPin, CheckCircle, GraduationCap, Cpu, Edit3, Trash2, Plus } from 'lucide-react';
+import { api } from '@/services/api';
+import { CreateRoomForm } from './CreateRoomForm';
+import { FacultyForm } from './FacultyForm';
 
 interface ResourceListProps {
   activeSubTab: 'ROOMS' | 'FACULTY';
   setActiveSubTab: (tab: 'ROOMS' | 'FACULTY') => void;
 }
 
-const rooms = [
-  { number: 'A-101', building: 'Main Block',  capacity: 60, status: 'Available'  as const },
-  { number: 'A-102', building: 'Main Block',  capacity: 40, status: 'Maintenance' as const },
-  { number: 'B-201', building: 'South Wing',  capacity: 50, status: 'Available'  as const },
-  { number: 'B-205', building: 'South Wing',  capacity: 40, status: 'Available'  as const },
-];
+interface Room {
+  id: string;
+  number: string;
+  building: string;
+  capacity: number;
+  status: 'Available' | 'Maintenance';
+}
 
-const faculty = [
-  { name: 'Dr. Alan Turing',        dept: 'Computer Science', roles: ['Invigilator', 'Evaluator'], status: 'Active' as const },
-  { name: 'Dr. Grace Hopper',       dept: 'Computer Science', roles: ['Invigilator'],              status: 'Active' as const },
-  { name: 'Dr. John von Neumann',   dept: 'Mathematics',      roles: ['Evaluator'],               status: 'Active' as const },
-];
+interface Faculty {
+  id: string;
+  name: string;
+  email: string;
+  deptId: string;
+  dept: string;
+  roles: string[];
+  status: 'Active' | 'Inactive';
+}
 
 /* ── Inline SVG decorators ─────────────────────────────────────────── */
 const RoomVector = ({ color }: { color: string }) => (
@@ -84,6 +93,73 @@ const StatCard = ({ icon, label, value, color }: { icon: React.ReactNode; label:
 );
 
 export const ResourceList: React.FC<ResourceListProps> = ({ activeSubTab, setActiveSubTab }) => {
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [faculty, setFaculty] = useState<Faculty[]>([]);
+  
+  const [showRoomForm, setShowRoomForm] = useState(false);
+  const [showFacultyForm, setShowFacultyForm] = useState(false);
+  const [editingRoom, setEditingRoom] = useState<Room | null>(null);
+  const [editingFaculty, setEditingFaculty] = useState<Faculty | null>(null);
+
+  const fetchRooms = () => {
+    api.get('/scheduling/rooms/')
+      .then(res => {
+        const rawRooms = res.data.results || res.data;
+        setRooms(rawRooms.map((r: any) => ({
+          id: r.id,
+          number: r.name,
+          building: r.building,
+          capacity: r.exam_capacity || r.total_capacity,
+          status: r.is_active ? 'Available' : 'Maintenance'
+        })));
+      })
+      .catch(console.error);
+  };
+
+  const fetchFaculty = () => {
+    api.get('/auth/users/?role=FACULTY')
+      .then(res => {
+        const rawFac = res.data.results || res.data;
+        setFaculty(rawFac.map((f: any) => ({
+          id: f.id,
+          email: f.email,
+          name: f.full_name,
+          deptId: f.department?.id || '',
+          dept: f.department ? f.department.name : 'Central',
+          roles: ['Invigilator'],
+          status: f.is_active ? 'Active' : 'Inactive'
+        })));
+      })
+      .catch(console.error);
+  };
+
+  React.useEffect(() => {
+    fetchRooms();
+    fetchFaculty();
+  }, []);
+
+  const handleDeleteRoom = async (id: string) => {
+    if (!confirm('Are you sure you want to delete this room?')) return;
+    try {
+      await api.delete(`/scheduling/rooms/${id}/`);
+      fetchRooms();
+    } catch (err) {
+      console.error(err);
+      alert('Failed to delete room');
+    }
+  };
+
+  const handleDeleteFaculty = async (id: string) => {
+    if (!confirm('Are you sure you want to delete this faculty member?')) return;
+    try {
+      await api.delete(`/auth/users/${id}/`);
+      fetchFaculty();
+    } catch (err) {
+      console.error(err);
+      alert('Failed to delete faculty');
+    }
+  };
+
   const availableRooms = rooms.filter(r => r.status === 'Available').length;
   const totalCapacity  = rooms.reduce((sum, r) => sum + r.capacity, 0);
 
@@ -118,12 +194,26 @@ export const ResourceList: React.FC<ResourceListProps> = ({ activeSubTab, setAct
       </div>
 
       {activeSubTab === 'ROOMS' ? (
+        showRoomForm || editingRoom ? (
+          <CreateRoomForm 
+            initialData={editingRoom}
+            onCancel={() => { setShowRoomForm(false); setEditingRoom(null); }} 
+            onSave={() => { setShowRoomForm(false); setEditingRoom(null); fetchRooms(); }} 
+          />
+        ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-          {/* Stats */}
-          <div style={{ display: 'flex', gap: '16px' }}>
-            <StatCard icon={<DoorOpen size={20} />}    label="Total Rooms"      value={rooms.length}   color="#3b82f6" />
-            <StatCard icon={<CheckCircle size={20} />} label="Available Rooms"  value={availableRooms} color="#48977f" />
-            <StatCard icon={<Users size={20} />}       label="Total Capacity"   value={totalCapacity}  color="#8b5cf6" />
+          {/* Stats & Header */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div style={{ display: 'flex', gap: '16px', flex: 1 }}>
+              <StatCard icon={<DoorOpen size={20} />}    label="Total Rooms"      value={rooms.length}   color="#3b82f6" />
+              <StatCard icon={<CheckCircle size={20} />} label="Available Rooms"  value={availableRooms} color="#48977f" />
+              <StatCard icon={<Users size={20} />}       label="Total Capacity"   value={totalCapacity}  color="#8b5cf6" />
+            </div>
+            <div style={{ marginLeft: '16px' }}>
+              <Button variant="primary" onClick={() => setShowRoomForm(true)} style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <Plus size={16} /> Add Exam Room
+              </Button>
+            </div>
           </div>
 
           {/* Room Cards */}
@@ -168,21 +258,46 @@ export const ResourceList: React.FC<ResourceListProps> = ({ activeSubTab, setAct
                   </div>
 
                   {/* Capacity bar */}
-                  <div style={{ marginTop: '14px', height: '4px', borderRadius: '4px', background: `${color}18`, position: 'relative', zIndex: 1 }}>
-                    <div style={{ height: '100%', width: `${(room.capacity / 60) * 100}%`, background: color, borderRadius: '4px', transition: 'width 0.5s ease' }} />
+                  <div style={{ marginTop: '14px', height: '4px', borderRadius: '4px', background: `${color}18`, position: 'relative', zIndex: 1, marginBottom: '12px' }}>
+                    <div style={{ height: '100%', width: `${Math.min((room.capacity / 60) * 100, 100)}%`, background: color, borderRadius: '4px', transition: 'width 0.5s ease' }} />
+                  </div>
+                  
+                  {/* Actions */}
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', position: 'relative', zIndex: 1, borderTop: '1px solid var(--color-border)', paddingTop: '12px' }}>
+                    <button onClick={() => setEditingRoom(room)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-secondary)' }}>
+                      <Edit3 size={16} />
+                    </button>
+                    <button onClick={() => handleDeleteRoom(room.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}>
+                      <Trash2 size={16} />
+                    </button>
                   </div>
                 </div>
               );
             })}
           </div>
         </div>
+        )
       ) : (
+        showFacultyForm || editingFaculty ? (
+          <FacultyForm 
+            initialData={editingFaculty}
+            onCancel={() => { setShowFacultyForm(false); setEditingFaculty(null); }} 
+            onSave={() => { setShowFacultyForm(false); setEditingFaculty(null); fetchFaculty(); }} 
+          />
+        ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-          {/* Stats */}
-          <div style={{ display: 'flex', gap: '16px' }}>
-            <StatCard icon={<GraduationCap size={20} />} label="Total Faculty" value={faculty.length} color="#3b82f6" />
-            <StatCard icon={<CheckCircle size={20} />}   label="Active"        value={faculty.filter(f => f.status === 'Active').length} color="#48977f" />
-            <StatCard icon={<Cpu size={20} />}           label="Avg. Roles"    value={(faculty.reduce((s, f) => s + f.roles.length, 0) / faculty.length).toFixed(1)} color="#8b5cf6" />
+          {/* Stats & Header */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div style={{ display: 'flex', gap: '16px', flex: 1 }}>
+              <StatCard icon={<GraduationCap size={20} />} label="Total Faculty" value={faculty.length} color="#3b82f6" />
+              <StatCard icon={<CheckCircle size={20} />}   label="Active"        value={faculty.filter(f => f.status === 'Active').length} color="#48977f" />
+              <StatCard icon={<Cpu size={20} />}           label="Avg. Roles"    value={(faculty.reduce((s, f) => s + f.roles.length, 0) / (faculty.length || 1)).toFixed(1)} color="#8b5cf6" />
+            </div>
+            <div style={{ marginLeft: '16px' }}>
+              <Button variant="primary" onClick={() => setShowFacultyForm(true)} style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <Plus size={16} /> Add Faculty
+              </Button>
+            </div>
           </div>
 
           {/* Faculty Cards */}
@@ -228,12 +343,23 @@ export const ResourceList: React.FC<ResourceListProps> = ({ activeSubTab, setAct
                     ))}
                   </div>
 
-                  <Badge variant="success">{f.status}</Badge>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px', position: 'relative', zIndex: 1 }}>
+                    <Badge variant={f.status === 'Active' ? 'success' : 'warning'}>{f.status}</Badge>
+                    <div style={{ display: 'flex', gap: '8px', marginTop: 'auto' }}>
+                      <button onClick={() => setEditingFaculty(f)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-secondary)' }}>
+                        <Edit3 size={16} />
+                      </button>
+                      <button onClick={() => handleDeleteFaculty(f.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#ef4444' }}>
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  </div>
                 </div>
               );
             })}
           </div>
         </div>
+        )
       )}
     </>
   );

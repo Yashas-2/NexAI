@@ -28,9 +28,25 @@ class StudentEligibility(BaseModel):
         validators=[MinValueValidator(0), MaxValueValidator(100)],
         help_text="Attendance percentage (0-100)"
     )
+    cie1_marks = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="CIE 1 Marks"
+    )
+    cie2_marks = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="CIE 2 Marks"
+    )
+    cie3_marks = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="CIE 3 Marks"
+    )
+    assignment_marks = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="Assignment Marks"
+    )
     cie_marks = models.DecimalField(
         max_digits=5, decimal_places=2, null=True, blank=True,
-        help_text="Continuous Internal Evaluation marks"
+        help_text="Total Continuous Internal Evaluation marks (Calculated)"
     )
     
     is_eligible = models.BooleanField(default=False)

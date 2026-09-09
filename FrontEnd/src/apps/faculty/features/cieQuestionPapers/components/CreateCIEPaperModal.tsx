@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AssignedCourse, FacultyCIEPaper, FacultyCIEQuestion } from '../../../types';
-import { X, Plus, Send } from 'lucide-react';
+import { X, Plus, Send, Edit2, AlertTriangle } from 'lucide-react';
+import { useAuthStore } from '@/store/authStore';
 import toast from 'react-hot-toast';
 
 interface CreateCIEPaperModalProps {
@@ -9,6 +11,7 @@ interface CreateCIEPaperModalProps {
   courses: AssignedCourse[];
   onClose: () => void;
   onSubmitPaper: (paper: FacultyCIEPaper) => void;
+  initialPaper?: FacultyCIEPaper;
 }
 
 export const CreateCIEPaperModal: React.FC<CreateCIEPaperModalProps> = ({
@@ -17,35 +20,80 @@ export const CreateCIEPaperModal: React.FC<CreateCIEPaperModalProps> = ({
   courses,
   onClose,
   onSubmitPaper,
+  initialPaper,
 }) => {
-  const [newTestType, setNewTestType] = useState<'CIE-1' | 'CIE-2' | 'ASSIGNMENT_TEST'>('CIE-2');
+  const user = useAuthStore(s => s.user);
+  const [newTestType, setNewTestType] = useState<'CIE-1' | 'CIE-2' | 'CIE-3' | 'ASSIGNMENT_TEST'>('CIE-2');
   const [newQuestionText, setNewQuestionText] = useState('');
+  const [newQuestionAnswer, setNewQuestionAnswer] = useState('');
+  const [newQuestionNumber, setNewQuestionNumber] = useState('');
+  const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null);
   const [newQuestionMarks, setNewQuestionMarks] = useState(10);
   const [newQuestionBlooms, setNewQuestionBlooms] = useState<'L1' | 'L2' | 'L3' | 'L4' | 'L5'>('L3');
   const [newQuestionCO, setNewQuestionCO] = useState<'CO1' | 'CO2' | 'CO3' | 'CO4' | 'CO5'>('CO2');
-  const [stagedQuestions, setStagedQuestions] = useState<FacultyCIEQuestion[]>([
-    { id: 'sq1', qNumber: '1', text: 'Analyze the worst-case time complexity of QuickSort with randomized pivot selection.', marks: 10, bloomsLevel: 'L4', co: 'CO1' },
-    { id: 'sq2', qNumber: '2', text: 'Construct an AVL tree by inserting keys [10, 20, 30, 40, 50, 25] and show LL/LR rotations.', marks: 10, bloomsLevel: 'L3', co: 'CO2' },
-  ]);
+  const [stagedQuestions, setStagedQuestions] = useState<FacultyCIEQuestion[]>([]);
+
+  React.useEffect(() => {
+    if (isOpen) {
+      if (initialPaper) {
+        setStagedQuestions(initialPaper.questions);
+        setNewTestType(initialPaper.testType);
+      } else {
+        setStagedQuestions([]);
+        setNewTestType('CIE-2');
+      }
+      setNewQuestionText('');
+      setNewQuestionAnswer('');
+      setNewQuestionNumber('');
+      setEditingQuestionId(null);
+    }
+  }, [isOpen, initialPaper]);
 
   if (!isOpen) return null;
 
   const handleAddQuestionToDraft = () => {
+    if (!newQuestionNumber.trim()) {
+      toast.error('Please enter a question number (e.g. 1a).');
+      return;
+    }
     if (!newQuestionText.trim()) {
       toast.error('Please enter question description.');
       return;
     }
-    const newQ: FacultyCIEQuestion = {
-      id: `sq_${Date.now().toString().slice(-4)}`,
-      qNumber: `${stagedQuestions.length + 1}`,
-      text: newQuestionText.trim(),
-      marks: Number(newQuestionMarks) || 5,
-      bloomsLevel: newQuestionBlooms,
-      co: newQuestionCO,
-    };
-    setStagedQuestions(prev => [...prev, newQ]);
+    if (!newQuestionAnswer.trim()) {
+      toast.error('Please enter an answer/solution.');
+      return;
+    }
+
+    if (editingQuestionId) {
+      setStagedQuestions(prev => prev.map(q => q.id === editingQuestionId ? {
+        ...q,
+        qNumber: newQuestionNumber.trim(),
+        text: newQuestionText.trim(),
+        answer: newQuestionAnswer.trim(),
+        marks: Number(newQuestionMarks) || 5,
+        bloomsLevel: newQuestionBlooms,
+        co: newQuestionCO,
+      } : q));
+      setEditingQuestionId(null);
+      toast.success('Question updated successfully.');
+    } else {
+      const newQ: FacultyCIEQuestion = {
+        id: `sq_${Date.now().toString().slice(-4)}`,
+        qNumber: newQuestionNumber.trim(),
+        text: newQuestionText.trim(),
+        answer: newQuestionAnswer.trim(),
+        marks: Number(newQuestionMarks) || 5,
+        bloomsLevel: newQuestionBlooms,
+        co: newQuestionCO,
+      };
+      setStagedQuestions(prev => [...prev, newQ]);
+      toast.success(`Question ${newQ.qNumber} added to CIE paper draft.`);
+    }
+
     setNewQuestionText('');
-    toast.success(`Question ${newQ.qNumber} added to CIE paper draft.`);
+    setNewQuestionAnswer('');
+    setNewQuestionNumber('');
   };
 
   const handleSubmit = () => {
@@ -57,7 +105,7 @@ export const CreateCIEPaperModal: React.FC<CreateCIEPaperModalProps> = ({
     const selectedCourseObj = courses.find(c => c.code === selectedCourseCode);
 
     const newPaper: FacultyCIEPaper = {
-      id: `CIE-${selectedCourseCode}-${newTestType}-${Date.now().toString().slice(-4)}`,
+      id: initialPaper ? initialPaper.id : `CIE-${selectedCourseCode}-${newTestType}-${Date.now().toString().slice(-4)}`,
       courseCode: selectedCourseCode,
       courseTitle: selectedCourseObj?.title || 'Subject',
       semester: selectedCourseObj?.semester || 'Semester',
@@ -66,12 +114,13 @@ export const CreateCIEPaperModal: React.FC<CreateCIEPaperModalProps> = ({
       status: 'SUBMITTED_TO_HOD',
       submittedAt: new Date().toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }),
       questions: stagedQuestions,
+      facultyName: user?.full_name || 'Faculty Member',
     };
 
     onSubmitPaper(newPaper);
   };
 
-  return (
+  return createPortal(
     <div style={{
       position: 'fixed',
       inset: 0,
@@ -102,7 +151,7 @@ export const CreateCIEPaperModal: React.FC<CreateCIEPaperModalProps> = ({
         }}>
           <div>
             <h3 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 800, color: '#0F172A' }}>
-              Draft CIE Question Paper for {selectedCourseCode}
+              {initialPaper ? 'Revise CIE Paper' : 'Draft New CIE Paper'} for {selectedCourseCode}
             </h3>
             <p style={{ margin: '2px 0 0 0', fontSize: '0.75rem', color: '#64748B' }}>
               Author questions with Bloom's Taxonomy and submit to HOD for approval
@@ -112,6 +161,24 @@ export const CreateCIEPaperModal: React.FC<CreateCIEPaperModalProps> = ({
             <X size={20} />
           </button>
         </div>
+
+        {initialPaper?.hodRemarks && (
+          <div style={{ background: '#FEF2F2', padding: '16px 24px', borderBottom: '1px solid #FECACA', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#991B1B', fontWeight: 800, fontSize: '0.9rem' }}>
+              <AlertTriangle size={18} /> HOD Directives for Revision
+            </div>
+            <div style={{ color: '#7F1D1D', fontSize: '0.85rem' }}>{initialPaper.hodRemarks}</div>
+            
+            {initialPaper.hodEditedContent && initialPaper.hodEditedContent !== initialPaper.questions.map(q => `${q.qNumber}) [${q.marks}M] [${q.co}] [${q.bloomsLevel}]\n${q.text}`).join('\n\n') && (
+              <div style={{ marginTop: '8px', background: '#fff', padding: '12px', borderRadius: '8px', border: '1px solid #FCA5A5' }}>
+                <div style={{ fontSize: '0.75rem', fontWeight: 800, color: '#B91C1C', marginBottom: '6px' }}>HOD edited the paper text. Please update your questions below to match:</div>
+                <pre style={{ margin: 0, fontSize: '0.8rem', color: '#450A0A', whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>
+                  {initialPaper.hodEditedContent}
+                </pre>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Body */}
         <div style={{ padding: '24px', maxHeight: '68vh', overflowY: 'auto' }}>
@@ -125,6 +192,7 @@ export const CreateCIEPaperModal: React.FC<CreateCIEPaperModalProps> = ({
               >
                 <option value="CIE-1">CIE-1 (First Internal Test)</option>
                 <option value="CIE-2">CIE-2 (Second Internal Test)</option>
+                <option value="CIE-3">CIE-3 (Third Internal Test)</option>
                 <option value="ASSIGNMENT_TEST">Assignment / Lab Test</option>
               </select>
             </div>
@@ -141,14 +209,30 @@ export const CreateCIEPaperModal: React.FC<CreateCIEPaperModalProps> = ({
 
           {/* Add Question Box */}
           <div style={{ background: '#F8FAFC', padding: '16px', borderRadius: '12px', border: '1px solid #E2E8F0', marginBottom: '20px' }}>
-            <div style={{ fontSize: '0.82rem', fontWeight: 800, color: '#0F172A', marginBottom: '10px' }}>
-              ➕ Add Question to Paper:
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+              <div style={{ fontSize: '0.82rem', fontWeight: 800, color: '#0F172A' }}>
+                {editingQuestionId ? '✏️ Edit Question:' : '➕ Add Question to Paper:'}
+              </div>
+              <input
+                type="text"
+                placeholder="Q. No (e.g. 1a)"
+                value={newQuestionNumber}
+                onChange={e => setNewQuestionNumber(e.target.value)}
+                style={{ width: '120px', padding: '6px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '0.82rem', fontWeight: 800 }}
+              />
             </div>
             <textarea
               rows={3}
               placeholder="Enter question statement..."
               value={newQuestionText}
               onChange={e => setNewQuestionText(e.target.value)}
+              style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid #CBD5E1', fontSize: '0.82rem', fontFamily: 'inherit', boxSizing: 'border-box', marginBottom: '10px' }}
+            />
+            <textarea
+              rows={2}
+              placeholder="Enter answer/solution..."
+              value={newQuestionAnswer}
+              onChange={e => setNewQuestionAnswer(e.target.value)}
               style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: '1px solid #CBD5E1', fontSize: '0.82rem', fontFamily: 'inherit', boxSizing: 'border-box', marginBottom: '10px' }}
             />
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto', gap: '10px', alignItems: 'center' }}>
@@ -197,7 +281,7 @@ export const CreateCIEPaperModal: React.FC<CreateCIEPaperModalProps> = ({
                 style={{
                   marginTop: '16px',
                   padding: '7px 14px',
-                  background: '#0F172A',
+                  background: editingQuestionId ? '#0284C7' : '#0F172A',
                   color: 'white',
                   border: 'none',
                   borderRadius: '6px',
@@ -209,7 +293,7 @@ export const CreateCIEPaperModal: React.FC<CreateCIEPaperModalProps> = ({
                   gap: '4px',
                 }}
               >
-                <Plus size={14} /> Add
+                {editingQuestionId ? <Edit2 size={14} /> : <Plus size={14} />} {editingQuestionId ? 'Update' : 'Add'}
               </button>
             </div>
           </div>
@@ -229,12 +313,42 @@ export const CreateCIEPaperModal: React.FC<CreateCIEPaperModalProps> = ({
               {stagedQuestions.map((q, idx) => (
                 <div key={q.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#F8FAFC', padding: '10px 14px', borderRadius: '8px', border: '1px solid #E2E8F0', fontSize: '0.82rem' }}>
                   <div style={{ color: '#334155' }}>
-                    <strong>Q{idx + 1}.</strong> {q.text}
+                    <strong>Q{q.qNumber}.</strong> {q.text}
+                    {q.answer && (
+                      <div style={{ marginTop: '4px', fontSize: '0.75rem', color: '#64748B', fontStyle: 'italic' }}>
+                        Ans: {q.answer}
+                      </div>
+                    )}
                   </div>
-                  <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+                  <div style={{ display: 'flex', gap: '6px', flexShrink: 0, alignItems: 'center' }}>
                     <span style={{ background: '#EEF2FF', color: '#4F46E5', padding: '2px 6px', borderRadius: '4px', fontSize: '0.72rem', fontWeight: 800 }}>{q.co}</span>
                     <span style={{ background: '#F3E8FF', color: '#7E22CE', padding: '2px 6px', borderRadius: '4px', fontSize: '0.72rem', fontWeight: 800 }}>{q.bloomsLevel}</span>
                     <span style={{ background: '#E0F2FE', color: '#0369A1', padding: '2px 6px', borderRadius: '4px', fontSize: '0.72rem', fontWeight: 800 }}>{q.marks}M</span>
+                    <button 
+                      onClick={() => {
+                        const qToEdit = stagedQuestions.find(item => item.id === q.id);
+                        if (qToEdit) {
+                          setEditingQuestionId(q.id);
+                          setNewQuestionNumber(qToEdit.qNumber);
+                          setNewQuestionText(qToEdit.text);
+                          setNewQuestionAnswer(qToEdit.answer || '');
+                          setNewQuestionMarks(qToEdit.marks);
+                          setNewQuestionBlooms(qToEdit.bloomsLevel);
+                          setNewQuestionCO(qToEdit.co);
+                        }
+                      }}
+                      style={{ background: 'transparent', border: 'none', color: '#0284C7', cursor: 'pointer', padding: '0 4px', display: 'flex', alignItems: 'center' }}
+                      title="Edit Question"
+                    >
+                      <Edit2 size={14} />
+                    </button>
+                    <button 
+                      onClick={() => setStagedQuestions(prev => prev.filter(item => item.id !== q.id))}
+                      style={{ background: 'transparent', border: 'none', color: '#EF4444', cursor: 'pointer', padding: '0 4px', display: 'flex', alignItems: 'center' }}
+                      title="Remove Question"
+                    >
+                      <X size={14} />
+                    </button>
                   </div>
                 </div>
               ))}
@@ -270,6 +384,7 @@ export const CreateCIEPaperModal: React.FC<CreateCIEPaperModalProps> = ({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

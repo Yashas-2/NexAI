@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ExamHall,
   AllocatedSeat,
@@ -24,9 +24,12 @@ import {
   Layers,
   Calendar,
   Clock,
-  BookOpen
+  BookOpen,
+  Lock,
+  Trash2
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { api } from '@/services/api';
 
 interface Props {
   halls: ExamHall[];
@@ -36,6 +39,7 @@ interface Props {
   facultyDuties: FacultyDutyAllocation[];
   targetSession?: DepartmentExamSession | null;
   sessions?: DepartmentExamSession[];
+  students?: any[];
   onClose: () => void;
 }
 
@@ -47,6 +51,7 @@ export const AISeatingEngineModal: React.FC<Props> = ({
   facultyDuties: initialFacultyDuties,
   targetSession,
   sessions = [],
+  students = [],
   onClose,
 }) => {
   const [activeSessionId, setActiveSessionId] = useState<string>(
@@ -64,9 +69,144 @@ export const AISeatingEngineModal: React.FC<Props> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [isSolving, setIsSolving] = useState(false);
   const [solvedSuccessfully, setSolvedSuccessfully] = useState(true);
+  const [isAllocationLocked, setIsAllocationLocked] = useState(false);
 
   const [seats, setSeats] = useState<AllocatedSeat[]>(initialAllocatedSeats);
   const [duties, setDuties] = useState<FacultyDutyAllocation[]>(initialFacultyDuties);
+
+  // Load saved allocation from backend on mount
+  useEffect(() => {
+    if (!activeSessionId) return;
+    loadSavedAllocation(activeSessionId);
+  }, [activeSessionId]);
+
+  const loadSavedAllocation = async (sessionId: string) => {
+    try {
+      // Fetch timetable slots for this session (these are persisted)
+      const slotsRes = await api.get('/scheduling/timetable/', {
+        params: { exam_session: sessionId }
+      });
+      const slots = slotsRes.data.results || slotsRes.data || [];
+      
+      if (Array.isArray(slots) && slots.length > 0) {
+        // Allocation exists — load it
+        const newSeats: AllocatedSeat[] = [];
+        const semesterColors: Record<number, string> = { 1: '#3B82F6', 3: '#3B82F6', 5: '#10B981', 7: '#8B5CF6' };
+
+        for (const slot of slots) {
+          const seatMap = slot.seat_map || {};
+          for (const [usn, seatLabel] of Object.entries(seatMap)) {
+            const matchedStudent = students.find(s => s.usn === usn);
+            const sem = matchedStudent?.semester || 1;
+            const color = semesterColors[sem] || '#64748B';
+
+            newSeats.push({
+              seatId: `SEAT-${slot.room_name}-${usn}`,
+              studentUSN: usn,
+              studentName: matchedStudent?.name || `Student (${usn})`,
+              semester: `${['', '', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th'][sem] || sem} Sem`,
+              subjectCode: slot.subject_code,
+              subjectTitle: slot.subject_name,
+              roomNumber: slot.room_name,
+              seatNumber: seatLabel as string,
+              colorTheme: color,
+              examDate: slot.exam_date || '',
+              timeSlot: `${slot.start_time || ''} - ${slot.end_time || ''}`,
+            });
+          }
+        }
+
+        setSeats(newSeats);
+        setIsAllocationLocked(true);
+        setSolvedSuccessfully(true);
+
+        if (newSeats.length > 0 && !selectedRoom) {
+          setSelectedRoom(newSeats[0].roomNumber);
+        }
+
+        // Also fetch duties
+        try {
+          const dutiesRes = await api.get('/scheduling/invigilation/', {
+            params: { timetable_slot__exam_session: sessionId }
+          });
+          const dutiesData = dutiesRes.data.results || dutiesRes.data || [];
+          const mappedDuties: FacultyDutyAllocation[] = dutiesData.map((d: any) => ({
+            id: d.id,
+            facultyId: d.invigilator,
+            facultyName: d.invigilator_name || 'Faculty',
+            employeeId: '',
+            dutyCount: 1,
+            assignments: [{
+              examSessionId: sessionId,
+              roomNumber: selectedRoom,
+              examDate: '',
+              timeSlot: '',
+              role: d.duty_role,
+            }],
+          }));
+          setDuties(mappedDuties);
+        } catch { /* optional */ }
+      } else {
+        setIsAllocationLocked(false);
+      }
+    } catch {
+      // Slots endpoint may not return array — try seating-blueprint
+      try {
+        const bpRes = await api.get('/scheduling/seating-blueprint/', {
+          params: { exam_session: sessionId }
+        });
+        const rooms = bpRes.data.rooms || [];
+        const newSeats: AllocatedSeat[] = [];
+        for (const room of rooms) {
+          for (const seat of room.seats || []) {
+            const matchedStudent = students.find(s => s.usn === seat.usn);
+            newSeats.push({
+              seatId: `SEAT-${room.room_name}-${seat.usn}`,
+              studentUSN: seat.usn,
+              studentName: seat.student_name || matchedStudent?.name || `Student (${seat.usn})`,
+              semester: `${seat.semester || 1} Sem`,
+              subjectCode: seat.subject_code,
+              subjectTitle: seat.subject_name,
+              roomNumber: room.room_name,
+              seatNumber: seat.seat,
+              colorTheme: '#3B82F6',
+              examDate: '',
+              timeSlot: '',
+            });
+          }
+        }
+        if (newSeats.length > 0) {
+          setSeats(newSeats);
+          setIsAllocationLocked(true);
+          setSolvedSuccessfully(true);
+        }
+      } catch { /* no saved allocation */ }
+    }
+  };
+
+  const handleDeleteAllocation = async () => {
+    if (!activeSessionId) return;
+    if (!window.confirm('Delete the current seat allocation? This cannot be undone.')) return;
+    
+    try {
+      // Delete all timetable slots for this session
+      const slotsRes = await api.get('/scheduling/timetable/', {
+        params: { exam_session: activeSessionId }
+      });
+      const slots = slotsRes.data.results || slotsRes.data || [];
+      if (Array.isArray(slots)) {
+        for (const slot of slots) {
+          await api.delete(`/scheduling/timetable/${slot.id}/`).catch(() => {});
+        }
+      }
+      setSeats([]);
+      setDuties([]);
+      setIsAllocationLocked(false);
+      toast.success('Allocation deleted. You can now re-run the solver.');
+    } catch {
+      toast.error('Failed to delete allocation');
+    }
+  };
 
   const handleSessionChange = (sessionId: string) => {
     setActiveSessionId(sessionId);
@@ -77,15 +217,97 @@ export const AISeatingEngineModal: React.FC<Props> = ({
     toast.success(`Switched view to ${session?.title || 'Exam Session'}`);
   };
 
-  // Trigger simulated AI solver
-  const handleRunSolver = () => {
+  // Trigger AI solver and load real seating data
+  const handleRunSolver = async () => {
     setIsSolving(true);
-    setTimeout(() => {
-      setIsSolving(false);
+    try {
+      const res = await api.post('/scheduling/timetable/generate/', {
+        exam_session_id: activeSessionId,
+        time_limit_secs: 60,
+      });
+      toast.success(res.data.message || 'AI Optimization Complete!');
+
+      // Use real seat_data from backend response
+      const seatData = res.data.seat_data || [];
+      const newSeats: AllocatedSeat[] = [];
+      const semesterColors: Record<number, string> = { 3: '#3B82F6', 5: '#10B981', 7: '#8B5CF6' };
+
+      for (const slotData of seatData) {
+        const seatMap = slotData.seat_map || {};
+        for (const [usn, seatLabel] of Object.entries(seatMap)) {
+          // Find matching student from props
+          const matchedStudent = students.find(s => s.usn === usn);
+          const sem = matchedStudent?.semester || 5;
+          const color = semesterColors[sem] || '#64748B';
+
+          newSeats.push({
+            seatId: `SEAT-${slotData.room_name}-${usn}`,
+            studentUSN: usn,
+            studentName: matchedStudent?.name || `Student (${usn})`,
+            semester: `${['', '', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th'][sem] || sem} Sem`,
+            subjectCode: slotData.subject_code,
+            subjectTitle: slotData.subject_name,
+            roomNumber: slotData.room_name,
+            seatNumber: seatLabel as string,
+            colorTheme: color,
+            examDate: slotData.exam_date || activeSession?.examDate || '',
+            timeSlot: activeSession?.timeSlot || '',
+          });
+        }
+      }
+      setSeats(newSeats);
       setSolvedSuccessfully(true);
-      toast.success('AI Optimization Complete! 160 candidates seated across 3 semesters with 100% equal duty sharing.');
-    }, 1400);
+      setIsAllocationLocked(true);
+
+      // Fetch invigilation duties
+      try {
+        const dutiesRes = await api.get('/scheduling/invigilation/', {
+          params: { timetable_slot__exam_session: activeSessionId }
+        });
+        const dutiesData = dutiesRes.data.results || dutiesRes.data || [];
+        const dutyMap: Record<string, FacultyDutyAllocation> = {};
+        
+        for (const d of dutiesData) {
+          const facultyId = d.invigilator;
+          if (!dutyMap[facultyId]) {
+            dutyMap[facultyId] = {
+              id: d.id,
+              facultyId: facultyId,
+              facultyName: d.invigilator_name || 'Faculty',
+              employeeId: d.employee_id || '-',
+              dutyCount: 0,
+              assignments: [],
+            };
+          }
+          dutyMap[facultyId].dutyCount += 1;
+          
+          let timeSlot = '';
+          if (d.start_time && d.end_time) {
+             const startStr = d.start_time.substring(0, 5);
+             const endStr = d.end_time.substring(0, 5);
+             timeSlot = `${startStr} - ${endStr}`;
+          }
+
+          dutyMap[facultyId].assignments.push({
+            examSessionId: activeSessionId,
+            roomNumber: d.room_name || 'TBA',
+            examDate: d.exam_date || '',
+            timeSlot: timeSlot,
+            role: d.duty_role,
+          });
+        }
+        setDuties(Object.values(dutyMap));
+      } catch {
+        // Duties fetch is optional
+      }
+
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Failed to generate timetable');
+    } finally {
+      setIsSolving(false);
+    }
   };
+
 
   // Filtered seats for selected room
   const roomSeats = seats.filter(s => s.roomNumber === selectedRoom);
@@ -109,7 +331,7 @@ export const AISeatingEngineModal: React.FC<Props> = ({
   };
 
   return (
-    <div style={{
+    <div className="print-modal-wrapper" style={{
       position: 'fixed',
       inset: 0,
       background: 'rgba(15, 23, 42, 0.8)',
@@ -119,9 +341,11 @@ export const AISeatingEngineModal: React.FC<Props> = ({
       justifyContent: 'center',
       zIndex: 9999,
       padding: '1.2rem',
+      paddingLeft: 'max(260px, 1.2rem)', // Account for the sidebar width
+      boxSizing: 'border-box',
       fontFamily: 'var(--font-sans, inherit)',
     }}>
-      <div style={{
+      <div className="print-modal-container" style={{
         background: '#FFFFFF',
         borderRadius: '24px',
         maxWidth: '1080px',
@@ -134,7 +358,7 @@ export const AISeatingEngineModal: React.FC<Props> = ({
         flexDirection: 'column',
       }}>
         {/* ── Top Header Bar ── */}
-        <div style={{
+        <div className="no-print" style={{
           padding: '16px 24px',
           background: '#0F172A',
           color: 'white',
@@ -170,6 +394,16 @@ export const AISeatingEngineModal: React.FC<Props> = ({
 
           {/* Right: Clean Exam Switcher & Actions */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            {isAllocationLocked && (
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', gap: '5px',
+                background: '#065F46', color: '#D1FAE5', padding: '5px 10px',
+                borderRadius: '7px', fontSize: '0.72rem', fontWeight: 800,
+              }}>
+                <Lock size={12} /> ALLOCATION LOCKED
+              </span>
+            )}
+
             {sessions && sessions.length > 1 && (
               <div style={{
                 display: 'flex',
@@ -206,25 +440,46 @@ export const AISeatingEngineModal: React.FC<Props> = ({
               </div>
             )}
 
-            <button
-              onClick={handleRunSolver}
-              disabled={isSolving}
-              style={{
-                padding: '7px 14px',
-                borderRadius: '8px',
-                border: '1px solid rgba(255,255,255,0.15)',
-                background: 'rgba(255,255,255,0.08)',
-                color: '#F8FAFC',
-                fontWeight: 700,
-                fontSize: '0.76rem',
-                cursor: isSolving ? 'wait' : 'pointer',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '5px',
-              }}
-            >
-              <Zap size={14} color="#34D399" /> {isSolving ? 'Solving...' : 'Re-Run Solver'}
-            </button>
+            {!isAllocationLocked ? (
+              <button
+                onClick={handleRunSolver}
+                disabled={isSolving}
+                style={{
+                  padding: '7px 14px',
+                  borderRadius: '8px',
+                  border: '1px solid rgba(255,255,255,0.15)',
+                  background: 'rgba(255,255,255,0.08)',
+                  color: '#F8FAFC',
+                  fontWeight: 700,
+                  fontSize: '0.76rem',
+                  cursor: isSolving ? 'wait' : 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                }}
+              >
+                <Zap size={14} color="#34D399" /> {isSolving ? 'Solving...' : 'Run AI Generator'}
+              </button>
+            ) : (
+              <button
+                onClick={handleDeleteAllocation}
+                style={{
+                  padding: '7px 14px',
+                  borderRadius: '8px',
+                  border: '1px solid rgba(239,68,68,0.3)',
+                  background: 'rgba(239,68,68,0.15)',
+                  color: '#FCA5A5',
+                  fontWeight: 700,
+                  fontSize: '0.76rem',
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                }}
+              >
+                <Trash2 size={14} /> Delete & Re-Generate
+              </button>
+            )}
 
             <button
               onClick={onClose}
@@ -323,7 +578,9 @@ export const AISeatingEngineModal: React.FC<Props> = ({
               <Users size={18} color="#9333EA" />
               <div>
                 <span style={{ fontSize: '0.7rem', color: '#64748B', fontWeight: 700, display: 'block' }}>Simultaneous Candidates</span>
-                <strong style={{ fontSize: '0.85rem', color: '#7E22CE' }}>160 Students (3rd, 5th & 7th Sem)</strong>
+                <strong style={{ fontSize: '0.85rem', color: '#7E22CE' }}>
+                  {seats.length > 0 ? seats.length : activeSession?.totalStudentsExpected || 0} Students ({activeSession?.semester || 'Mixed Sem'})
+                </strong>
               </div>
             </div>
           </div>
@@ -426,35 +683,37 @@ export const AISeatingEngineModal: React.FC<Props> = ({
                       color: '#0F172A',
                     }}
                   >
-                    {activeSession?.roomsAllocated.map(r => (
-                      <option key={r} value={r}>
-                        ★ {r} (Assigned to {activeSession.subjectCode})
+                    {[...new Set(seats.map(s => s.roomNumber))].map(room => (
+                      <option key={room} value={room}>
+                        {room} ({seats.filter(s => s.roomNumber === room).length} Students)
                       </option>
                     ))}
-                    {halls
-                      .filter(h => !activeSession?.roomsAllocated.includes(h.roomNumber))
-                      .map(h => (
-                        <option key={h.id} value={h.roomNumber}>
-                          {h.roomNumber} ({h.capacity} Seats • {h.blockName})
+                    {activeSession?.roomsAllocated
+                      .filter(r => !seats.some(s => s.roomNumber === r))
+                      .map(r => (
+                        <option key={r} value={r}>
+                          {r} (Empty)
                         </option>
                       ))}
                   </select>
                 </div>
 
-                {/* Color-coded semester legend */}
+                {/* Color-coded semester legend - dynamic based on data */}
                 <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.74rem', fontWeight: 700 }}>
-                    <span style={{ width: 12, height: 12, borderRadius: '3px', background: '#3B82F6', display: 'inline-block' }} />
-                    <span style={{ color: '#1E40AF' }}>3rd Sem (CS201 Data Structures)</span>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.74rem', fontWeight: 700 }}>
-                    <span style={{ width: 12, height: 12, borderRadius: '3px', background: '#10B981', display: 'inline-block' }} />
-                    <span style={{ color: '#065F46' }}>5th Sem (CS301 OS)</span>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.74rem', fontWeight: 700 }}>
-                    <span style={{ width: 12, height: 12, borderRadius: '3px', background: '#8B5CF6', display: 'inline-block' }} />
-                    <span style={{ color: '#5B21B6' }}>7th Sem (CS401 Cloud)</span>
-                  </div>
+                  {(() => {
+                    const subjectSemMap: Record<string, { sem: string; color: string }> = {};
+                    seats.forEach(s => {
+                      if (!subjectSemMap[s.subjectCode]) {
+                        subjectSemMap[s.subjectCode] = { sem: s.semester, color: s.colorTheme };
+                      }
+                    });
+                    return Object.entries(subjectSemMap).map(([code, info]) => (
+                      <div key={code} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.74rem', fontWeight: 700 }}>
+                        <span style={{ width: 12, height: 12, borderRadius: '3px', background: info.color, display: 'inline-block' }} />
+                        <span style={{ color: info.color }}>{info.sem} ({code})</span>
+                      </div>
+                    ));
+                  })()}
                 </div>
               </div>
 
@@ -478,7 +737,7 @@ export const AISeatingEngineModal: React.FC<Props> = ({
               </div>
 
               {/* 2D Bench Grid */}
-              <div style={{
+              <div className="print-grid" style={{
                 display: 'grid',
                 gridTemplateColumns: 'repeat(6, 1fr)',
                 gap: '12px',
@@ -491,6 +750,7 @@ export const AISeatingEngineModal: React.FC<Props> = ({
                   roomSeats.map(seat => (
                     <div
                       key={seat.seatId}
+                      className="print-avoid-break"
                       style={{
                         background: 'white',
                         borderRadius: '12px',
@@ -803,7 +1063,7 @@ export const AISeatingEngineModal: React.FC<Props> = ({
         </div>
 
         {/* ── Modal Footer ── */}
-        <div style={{
+        <div className="print-modal-footer no-print" style={{
           padding: '16px 28px',
           borderTop: '1px solid #E2E8F0',
           display: 'flex',

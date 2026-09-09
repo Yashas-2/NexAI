@@ -1,20 +1,29 @@
 import React from 'react';
 import { Calendar, Clock, ArrowRight, CheckSquare, Square } from 'lucide-react';
 import { SessionScopeConfig, SemesterNumber, TimeSlot } from '../../../types/allocationTypes';
-import { MOCK_DEPARTMENTS, MOCK_TIME_SLOTS } from '../../../mock/allocationMockData';
+
+// Standard exam time slots (institutional configuration — not a DB entity)
+const STANDARD_TIME_SLOTS: TimeSlot[] = [
+  { id: 'SLOT_M1', name: 'Morning Forenoon Slot (M1)', startTime: '09:30 AM', endTime: '12:30 PM', sessionPeriod: 'FORENOON' },
+  { id: 'SLOT_A1', name: 'Afternoon Post-Meridiem Slot (A1)', startTime: '02:00 PM', endTime: '05:00 PM', sessionPeriod: 'AFTERNOON' },
+];
 
 interface Step1ScopeScheduleProps {
   config: SessionScopeConfig;
+  departments: any[]; // live from API
   onChange: (updated: Partial<SessionScopeConfig>) => void;
   onNext: () => void;
+  saving?: boolean;
 }
 
 export const Step1ScopeSchedule: React.FC<Step1ScopeScheduleProps> = ({
   config,
+  departments,
   onChange,
   onNext,
+  saving = false,
 }) => {
-  const allDepts = MOCK_DEPARTMENTS;
+  const allDepts = departments;
   const allSemesters: SemesterNumber[] = [1, 2, 3, 4, 5, 6, 7, 8];
 
   const toggleDept = (deptCode: string) => {
@@ -49,10 +58,27 @@ export const Step1ScopeSchedule: React.FC<Step1ScopeScheduleProps> = ({
 
   const toggleSlot = (slot: TimeSlot) => {
     const exists = config.selectedSlots.some(s => s.id === slot.id);
-    const updated = exists
-      ? config.selectedSlots.filter(s => s.id !== slot.id)
-      : [...config.selectedSlots, slot];
-    onChange({ selectedSlots: updated });
+    if (exists) {
+      // Deselect
+      onChange({ selectedSlots: config.selectedSlots.filter(s => s.id !== slot.id) });
+    } else if (config.examsPerDay === 1) {
+      // Single-session mode: replace any existing slot with the new one
+      onChange({ selectedSlots: [slot] });
+    } else {
+      // Two-session mode: allow both
+      onChange({ selectedSlots: [...config.selectedSlots, slot] });
+    }
+  };
+
+  // When examsPerDay changes, enforce slot limits
+  const handleExamsPerDayChange = (num: 1 | 2) => {
+    onChange({
+      examsPerDay: num,
+      // If switching to 1/day and 2 slots selected, keep only the first
+      selectedSlots: num === 1 && config.selectedSlots.length > 1
+        ? [config.selectedSlots[0]]
+        : config.selectedSlots,
+    });
   };
 
   const isFormValid =
@@ -61,8 +87,45 @@ export const Step1ScopeSchedule: React.FC<Step1ScopeScheduleProps> = ({
     config.selectedSemesters.length > 0 &&
     config.selectedSlots.length > 0;
 
+  if (allDepts.length === 0) {
+    return (
+      <div style={{ padding: '40px', textAlign: 'center', color: '#64748B' }}>
+        <p>Loading departments from server...</p>
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+
+      {/* ── Guidance Panel ── */}
+      <div style={{
+        background: 'linear-gradient(135deg, #EEF2FF 0%, #F0F9FF 100%)',
+        border: '1.5px solid #C7D2FE',
+        borderRadius: '14px',
+        padding: '18px 22px',
+        display: 'flex',
+        gap: '16px',
+        alignItems: 'flex-start',
+      }}>
+        <div style={{ fontSize: '1.6rem', flexShrink: 0 }}>📋</div>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: '0.9rem', color: '#3730A3', marginBottom: '6px' }}>
+            Step 1 of 5 — What to fill here
+          </div>
+          <ul style={{ margin: 0, paddingLeft: '18px', color: '#4338CA', fontSize: '0.82rem', lineHeight: 1.7 }}>
+            <li><strong>Session Name</strong> — e.g. <code style={{background:'#E0E7FF',padding:'1px 6px',borderRadius:'4px'}}>SEE Autumn 2026 — Core Sciences</code></li>
+            <li><strong>Academic Year</strong> — e.g. <code style={{background:'#E0E7FF',padding:'1px 6px',borderRadius:'4px'}}>2026-27</code></li>
+            <li><strong>Departments</strong> — Select all branches that have exams (e.g. CSE, ECE, ME)</li>
+            <li><strong>Semesters</strong> — Select 3, 5, 7 for <em>Odd semester exams</em> or 2, 4, 6, 8 for Even</li>
+            <li><strong>Start Date</strong> — First exam date, e.g. <code style={{background:'#E0E7FF',padding:'1px 6px',borderRadius:'4px'}}>2026-11-30</code></li>
+            <li><strong>End Date</strong> — Last exam date, e.g. <code style={{background:'#E0E7FF',padding:'1px 6px',borderRadius:'4px'}}>2026-12-15</code></li>
+            <li><strong>Sessions/Day</strong> — Usually <strong>1</strong> (morning only). Select 2 if both slots are used.</li>
+            <li><strong>Time Slot</strong> — Select the slot that matches the exam schedule</li>
+          </ul>
+        </div>
+      </div>
+
       {/* Banner */}
       <div style={{
         background: 'linear-gradient(135deg, #4338CA 0%, #312E81 100%)',
@@ -148,12 +211,32 @@ export const Step1ScopeSchedule: React.FC<Step1ScopeScheduleProps> = ({
 
         <div>
           <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 700, marginBottom: '6px', color: '#1E293B' }}>
-            Exam Date
+            Exam Start Date
           </label>
           <input
             type="date"
             value={config.startDate}
             onChange={e => onChange({ startDate: e.target.value })}
+            style={{
+              width: '100%',
+              padding: '10px 14px',
+              borderRadius: '8px',
+              border: '1.5px solid #CBD5E1',
+              fontSize: '0.875rem',
+              boxSizing: 'border-box',
+            }}
+          />
+        </div>
+
+        <div>
+          <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 700, marginBottom: '6px', color: '#1E293B' }}>
+            Exam End Date
+          </label>
+          <input
+            type="date"
+            value={config.endDate}
+            min={config.startDate}
+            onChange={e => onChange({ endDate: e.target.value })}
             style={{
               width: '100%',
               padding: '10px 14px',
@@ -196,7 +279,7 @@ export const Step1ScopeSchedule: React.FC<Step1ScopeScheduleProps> = ({
                 color: '#334155',
               }}
             >
-              Select All (6)
+              Select All ({allDepts.length})
             </button>
             <button
               onClick={clearAllDepts}
@@ -358,7 +441,7 @@ export const Step1ScopeSchedule: React.FC<Step1ScopeScheduleProps> = ({
                 {[1, 2].map(num => (
                   <button
                     key={num}
-                    onClick={() => onChange({ examsPerDay: num as 1 | 2 })}
+                    onClick={() => handleExamsPerDayChange(num as 1 | 2)}
                     style={{
                       flex: 1,
                       padding: '10px',
@@ -382,8 +465,9 @@ export const Step1ScopeSchedule: React.FC<Step1ScopeScheduleProps> = ({
               <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#475569' }}>
                 Active Time Windows:
               </span>
-              {MOCK_TIME_SLOTS.map(slot => {
+              {STANDARD_TIME_SLOTS.map(slot => {
                 const isSelected = config.selectedSlots.some(s => s.id === slot.id);
+                const isDisabled = !isSelected && config.examsPerDay === 1 && config.selectedSlots.length >= 1;
                 return (
                   <div
                     key={slot.id}
@@ -391,17 +475,20 @@ export const Step1ScopeSchedule: React.FC<Step1ScopeScheduleProps> = ({
                     style={{
                       padding: '10px 14px',
                       borderRadius: '8px',
-                      border: isSelected ? '2px solid #10B981' : '1.5px solid #E2E8F0',
-                      background: isSelected ? '#ECFDF5' : '#FAFAFA',
-                      cursor: 'pointer',
+                      border: isSelected ? '2px solid #10B981' : (isDisabled ? '1.5px dashed #CBD5E1' : '1.5px solid #E2E8F0'),
+                      background: isSelected ? '#ECFDF5' : (isDisabled ? '#F1F5F9' : '#FAFAFA'),
+                      cursor: isDisabled ? 'not-allowed' : 'pointer',
+                      opacity: isDisabled ? 0.5 : 1,
                       display: 'flex',
                       justifyContent: 'space-between',
                       alignItems: 'center',
+                      transition: 'all 0.15s ease',
                     }}
                   >
                     <div>
                       <div style={{ fontWeight: 700, fontSize: '0.82rem', color: isSelected ? '#065F46' : '#1E293B' }}>
                         {slot.name}
+                        {isDisabled && <span style={{ fontSize: '0.7rem', color: '#94A3B8', marginLeft: '8px', fontWeight: 400 }}>(1 session/day limit)</span>}
                       </div>
                       <div style={{ fontSize: '0.75rem', color: '#64748B' }}>
                         {slot.startTime} – {slot.endTime} (3.0 Hours)
@@ -426,27 +513,45 @@ export const Step1ScopeSchedule: React.FC<Step1ScopeScheduleProps> = ({
       </div>
 
       {/* Navigation Footer */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '12px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '12px' }}>
+        {/* Validation hint */}
+        {!isFormValid && (
+          <div style={{ fontSize: '0.8rem', color: '#94A3B8', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span>⚠️</span>
+            <span>
+              {!config.sessionName.trim() ? 'Enter a session name' :
+               config.selectedDepartments.length === 0 ? 'Select at least 1 department' :
+               config.selectedSemesters.length === 0 ? 'Select target semesters' :
+               'Select a time slot'}
+            </span>
+          </div>
+        )}
+        {isFormValid && !saving && <div />}
+
         <button
           onClick={onNext}
-          disabled={!isFormValid}
+          disabled={!isFormValid || saving}
           style={{
-            background: isFormValid ? 'linear-gradient(135deg, #4F46E5, #6366F1)' : '#CBD5E1',
+            background: (isFormValid && !saving) ? 'linear-gradient(135deg, #4F46E5, #6366F1)' : '#CBD5E1',
             color: 'white',
             border: 'none',
             borderRadius: '10px',
             padding: '12px 28px',
             fontWeight: 800,
             fontSize: '0.9rem',
-            cursor: isFormValid ? 'pointer' : 'not-allowed',
+            cursor: (isFormValid && !saving) ? 'pointer' : 'not-allowed',
             display: 'flex',
             alignItems: 'center',
             gap: '8px',
-            boxShadow: isFormValid ? '0 4px 14px rgba(79,70,229,0.3)' : 'none',
+            boxShadow: (isFormValid && !saving) ? '0 4px 14px rgba(79,70,229,0.3)' : 'none',
             transition: 'all 0.2s ease',
           }}
         >
-          Continue to Subject Matrix <ArrowRight size={18} />
+          {saving ? (
+            <>⏳ Saving Session...</>
+          ) : (
+            <>Continue to Subject Matrix <ArrowRight size={18} /></>
+          )}
         </button>
       </div>
     </div>

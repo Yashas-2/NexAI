@@ -55,6 +55,20 @@ class Subject(models.Model):
         default=list,
         help_text="List of CO codes, e.g. ['CO1','CO2','CO3']",
     )
+    co_po_mapping = models.JSONField(
+        default=dict,
+        help_text="Mapping of COs to POs, e.g. {'CO1': {'PO1': 3, 'PO2': 2}}",
+    )
+
+    coordinator = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="coordinated_subjects",
+        limit_choices_to={"role__in": ["FACULTY", "HOD"]},
+        help_text="Faculty member assigned as course coordinator",
+    )
 
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -76,6 +90,14 @@ class Room(models.Model):
     name = models.CharField(max_length=100, unique=True, help_text="e.g. Room 101")
     building = models.CharField(max_length=100)
     floor = models.PositiveSmallIntegerField(default=0)
+    department = models.ForeignKey(
+        "users.Department",
+        on_delete=models.PROTECT,
+        related_name="rooms",
+        null=True,
+        blank=True,
+        help_text="Department this room belongs to (null = shared/common)",
+    )
     total_capacity = models.PositiveSmallIntegerField()
     exam_capacity = models.PositiveSmallIntegerField(
         help_text="Max students allowed during an exam (usually 60–70% of total)"
@@ -106,12 +128,40 @@ class ExamSession(models.Model):
         COMPLETED = "COMPLETED", "Completed"
         CANCELLED = "CANCELLED", "Cancelled"
 
+    class SessionType(models.TextChoices):
+        CIE = "CIE", "CIE - Continuous Internal Evaluation"
+        SEE = "SEE", "SEE - Semester End Examination"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=200, help_text="e.g. Nov-Dec 2024 SEE")
-    semester = models.PositiveSmallIntegerField()
+    session_type = models.CharField(
+        max_length=10,
+        choices=SessionType.choices,
+        default=SessionType.SEE,
+    )
+    semester = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text="Primary semester (nullable for multi-semester CoE sessions)"
+    )
+    semesters = models.JSONField(
+        default=list, blank=True,
+        help_text="All semesters included in this session, e.g. [3,5,7]"
+    )
+    departments = models.JSONField(
+        default=list, blank=True,
+        help_text="Dept codes included, e.g. ['CSE','ECE']"
+    )
     academic_year = models.CharField(max_length=10, help_text="e.g. 2024-25")
     start_date = models.DateField()
     end_date = models.DateField()
+    exams_per_day = models.PositiveSmallIntegerField(
+        default=1,
+        help_text="Maximum exam sessions per day (1 or 2)"
+    )
+    selected_slots = models.JSONField(
+        default=list, blank=True,
+        help_text="Selected time slots, e.g. ['SLOT_M1'] or ['SLOT_M1','SLOT_A1']"
+    )
     status = models.CharField(
         max_length=15,
         choices=SessionStatus.choices,
@@ -119,8 +169,13 @@ class ExamSession(models.Model):
         db_index=True,
     )
     scheduling_task_id = models.CharField(
-        max_length=255, blank=True,
-        help_text="Celery task ID for OR-Tools scheduling run"
+        max_length=255, blank=True, null=True,
+        help_text="Celery task ID for timetable generation"
+    )
+    subjects = models.ManyToManyField(
+        "Subject",
+        related_name="exam_sessions",
+        blank=True,
     )
     created_by = models.ForeignKey(
         "users.User",
@@ -186,6 +241,12 @@ class TimetableSlot(models.Model):
         help_text="Objective score from OR-Tools solver for this slot"
     )
 
+    # ── Seating Arrangement ───────────────────────────────────────────────────
+    seat_map = models.JSONField(
+        default=dict, blank=True,
+        help_text="Mapping of USN to specific seat coordinate, e.g. {'1MS24CS001': 'R1C2'}"
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -237,6 +298,37 @@ class InvigilationDuty(models.Model):
             f"{self.invigilator.full_name} → "
             f"{self.timetable_slot.subject.code} [{self.duty_role}]"
         )
+
+
+class InvigilatorSessionKey(models.Model):
+    """
+    Cryptographic key issued per TimetableSlot + InvigilationDuty to unlock
+    the scanning app and student SEE exams.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    duty = models.OneToOneField(
+        InvigilationDuty,
+        on_delete=models.CASCADE,
+        related_name="session_key"
+    )
+    session_key = models.CharField(
+        max_length=12,
+        unique=True,
+        help_text="Time-locked OTP or cryptographic key, e.g. EVAL-3F8B-4A12"
+    )
+    is_active = models.BooleanField(
+        default=False,
+        help_text="Becomes True when invigilator starts the session, unlocking student screens"
+    )
+    generated_at = models.DateTimeField(auto_now_add=True)
+    activated_at = models.DateTimeField(null=True, blank=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "scheduling_invigilator_session_key"
+
+    def __str__(self):
+        return f"Key for {self.duty}"
 
 
 class StudentSubjectEnrollment(models.Model):

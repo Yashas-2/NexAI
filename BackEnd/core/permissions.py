@@ -11,6 +11,7 @@ class IsChiefSuperintendent(BasePermission):
 
 
 class IsHOD(BasePermission):
+    """Allow access only to HOD role."""
     def has_permission(self, request, view):
         return bool(request.user and request.user.is_authenticated
                     and request.user.role == UserRole.HOD)
@@ -46,6 +47,20 @@ class IsStudent(BasePermission):
                     and request.user.role == UserRole.STUDENT)
 
 
+class IsAdmission(BasePermission):
+    """Allow access only to Admission Officers."""
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated
+                    and request.user.role == UserRole.ADMISSION)
+
+
+class IsAdmissionOrCoE(BasePermission):
+    """Allow Admission Officers or CoE to manage student bulk import."""
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated
+                    and request.user.role in {UserRole.ADMISSION, UserRole.CHIEF_SUPERINTENDENT})
+
+
 class IsStaff(BasePermission):
     """Any staff role (non-student)."""
     STAFF_ROLES = {
@@ -55,8 +70,24 @@ class IsStaff(BasePermission):
         UserRole.INVIGILATOR,
         UserRole.EVALUATOR,
         UserRole.SCRUTINIZER,
+        UserRole.FACULTY,
+        UserRole.ADMISSION,
     }
 
     def has_permission(self, request, view):
         return bool(request.user and request.user.is_authenticated
                     and request.user.role in self.STAFF_ROLES)
+
+
+class IsChiefSuperintendentOrHOD(BasePermission):
+    """Allow CoE or HOD to access (for listing users in their scope)."""
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated
+                    and request.user.role in {UserRole.CHIEF_SUPERINTENDENT, UserRole.HOD})
+
+
+class IsChiefSuperintendentOrHODOrAdmission(BasePermission):
+    """Allow CoE, HOD, or Admission Officer to access (Admission manages students)."""
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated
+                    and request.user.role in {UserRole.CHIEF_SUPERINTENDENT, UserRole.HOD, UserRole.ADMISSION})

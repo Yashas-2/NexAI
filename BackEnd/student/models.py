@@ -48,4 +48,54 @@ class Result(models.Model):
         super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.student.usn} - {self.subject.code} - Grade: {self.grade}"
+        return f"{self.student.usn} - {self.subject.code} - Grade: {self.grade} ({self.total_marks})"
+
+class SEEAttempt(models.Model):
+    """
+    A student's digital attempt for a Semester End Examination (SEE)
+    via the Flutter app.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    student = models.ForeignKey(
+        "users.Student", on_delete=models.CASCADE, related_name="see_attempts"
+    )
+    subject = models.ForeignKey(
+        "scheduling.Subject", on_delete=models.CASCADE, related_name="see_attempts"
+    )
+    exam_session = models.ForeignKey(
+        "scheduling.ExamSession", on_delete=models.CASCADE, related_name="see_attempts"
+    )
+    session_key = models.ForeignKey(
+        "scheduling.InvigilatorSessionKey", 
+        on_delete=models.SET_NULL, null=True, blank=True,
+        help_text="The session key used to unlock this attempt"
+    )
+    
+    started_at = models.DateTimeField(auto_now_add=True)
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    is_locked = models.BooleanField(default=False)
+
+    class Meta:
+        db_table = "student_see_attempt"
+        unique_together = [("student", "subject", "exam_session")]
+
+    def __str__(self):
+        return f"{self.student.usn} - {self.subject.code} SEE Attempt"
+
+
+class SEEAnswer(models.Model):
+    """
+    Individual answers for a SEE attempt.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    attempt = models.ForeignKey(SEEAttempt, on_delete=models.CASCADE, related_name="answers")
+    question = models.ForeignKey("vault.Question", on_delete=models.PROTECT, related_name="see_answers")
+    answer_text = models.TextField(blank=True)
+    marks_awarded = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+
+    class Meta:
+        db_table = "student_see_answer"
+        unique_together = [("attempt", "question")]
+
+    def __str__(self):
+        return f"Answer to {self.question.id} by {self.attempt.student.usn}"

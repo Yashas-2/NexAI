@@ -11,6 +11,7 @@ class UserRole:
     STUDENT = "STUDENT"
     SCANNING_OFFICER = "SCANNING_OFFICER"
     FACULTY = "FACULTY"
+    ADMISSION = "ADMISSION"
 
     CHOICES = [
         (CHIEF_SUPERINTENDENT, "Chief Superintendent / CoE"),
@@ -22,4 +23,5 @@ class UserRole:
         (STUDENT, "Student"),
         (SCANNING_OFFICER, "Scanning Center Superintendent"),
         (FACULTY, "Faculty / Course Teacher"),
+        (ADMISSION, "Admission Officer"),
     ]

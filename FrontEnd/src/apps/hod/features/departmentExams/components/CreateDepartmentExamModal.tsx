@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { DepartmentExamSession, CourseRecord, FacultyMember, ExamHall } from '../../../types';
+import { api } from '@/services/api';
 import {
   Calendar,
   Clock,
@@ -38,8 +39,23 @@ export const CreateDepartmentExamModal: React.FC<Props> = ({
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
 
   // Step 1: Exam Series & Subjects Selection
-  const [examType, setExamType] = useState<'CIE-1' | 'CIE-2' | 'LAB_INTERNAL' | 'SEE_THEORY'>('CIE-1');
+  const [examType, setExamType] = useState<'CIE-1' | 'CIE-2' | 'CIE-3' | 'LAB_INTERNAL'>('CIE-1');
   const [selectedCourseCodes, setSelectedCourseCodes] = useState<string[]>(courses.map(c => c.code));
+  
+  const [coeSessions, setCoeSessions] = useState<any[]>([]);
+  const [selectedCoeSessionId, setSelectedCoeSessionId] = useState<string>('');
+
+  React.useEffect(() => {
+    // Only fetch SEE sessions from CoE for linking
+    api.get('/scheduling/sessions/', { params: { session_type: 'SEE' } })
+      .then(res => {
+        const data = res.data.results || res.data;
+        // Filter to only include SEE sessions (COE-created)
+        const seeSessions = data.filter((s: any) => s.session_type === 'SEE' || (!s.session_type));
+        setCoeSessions(seeSessions);
+      })
+      .catch(console.error);
+  }, []);
 
   // Step 2: Date, Sessions Per Day & Slot Timings
   const [startDate, setStartDate] = useState('2026-09-22');
@@ -161,15 +177,58 @@ export const CreateDepartmentExamModal: React.FC<Props> = ({
     facultyMembers,
   ]);
 
-  const handleFinalSubmit = () => {
-    if (calculatedSchedule.sessions.length === 0) {
+  const handleFinalSubmit = async () => {
+    if (selectedCourseCodes.length === 0) {
       toast.error('Please select at least one course for the examination series.');
       return;
     }
 
-    onCreateSessions(calculatedSchedule.sessions);
-    toast.success(`Successfully scheduled ${calculatedSchedule.sessions.length} exams with equalized faculty workload!`);
-    onClose();
+    try {
+      const semesters = [...new Set(courses.filter(c => selectedCourseCodes.includes(c.code)).map(c => {
+        const match = c.semester?.match(/(\d+)/);
+        return match ? parseInt(match[1]) : 5;
+      }))];
+      const res = await api.post('/scheduling/sessions/', {
+        name: `${examType} Series - Fall 2026`,
+        session_type: 'CIE',
+        semesters: semesters,
+        semester: semesters[0] || null,
+        academic_year: '2026-27',
+        start_date: startDate,
+        end_date: startDate,
+        subject_codes: selectedCourseCodes,
+        ...(selectedCoeSessionId ? { linked_see_session: selectedCoeSessionId } : {}),
+      });
+
+      const newSession: DepartmentExamSession = {
+          id: res.data.id,
+          subjectCode: selectedCourseCodes.join(', '),
+          subjectTitle: res.data.name,
+          semester: res.data.semester ? `Semester ${res.data.semester}` : 'Multiple Semesters',
+          examType: examType,
+          examDate: res.data.start_date,
+          timeSlot: 'Pending Generation',
+          roomsAllocated: selectedHallNames,
+          totalStudentsExpected: res.data.student_count || selectedCourseCodes.length * 50,
+          studentBatches: [],
+          paperSetterName: res.data.created_by_name || 'HOD',
+          chiefInvigilatorName: 'TBD',
+          evaluatorName: 'Course Handlers',
+          status: res.data.status || 'DRAFT',
+          evaluatorSessionKey: res.data.id.split('-')[0].toUpperCase(),
+          schedulingTaskId: ''
+      };
+
+      onCreateSessions([newSession]);
+      toast.success(`Successfully scheduled ${examType} session in backend!`);
+      onClose();
+    } catch (err: any) {
+      toast.error(
+        err.response?.data 
+          ? JSON.stringify(err.response.data) 
+          : err.message || 'Failed to create exam session'
+      );
+    }
   };
 
   return (
@@ -283,8 +342,8 @@ export const CreateDepartmentExamModal: React.FC<Props> = ({
                   {[
                     { id: 'CIE-1', title: 'CIE-1 Series', desc: '1st Internal Tests' },
                     { id: 'CIE-2', title: 'CIE-2 Series', desc: '2nd Internal Tests' },
+                    { id: 'CIE-3', title: 'CIE-3 Series', desc: '3rd Internal Tests' },
                     { id: 'LAB_INTERNAL', title: 'Lab Practical', desc: 'Continuous Lab Exam' },
-                    { id: 'SEE_THEORY', title: 'SEE Theory', desc: 'Semester End Prep' },
                   ].map(e => (
                     <div
                       key={e.id}
@@ -305,6 +364,34 @@ export const CreateDepartmentExamModal: React.FC<Props> = ({
                     </div>
                   ))}
                 </div>
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 800, color: '#0F172A', marginBottom: '8px' }}>
+                  Link to COE Created SEE Session (Optional):
+                </label>
+                <select
+                  value={selectedCoeSessionId}
+                  onChange={e => setSelectedCoeSessionId(e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    borderRadius: '8px',
+                    border: '1px solid #CBD5E1',
+                    fontSize: '0.85rem',
+                    color: '#334155',
+                    outline: 'none',
+                    background: 'white'
+                  }}
+                >
+                  <option value="">-- No Linkage (Standalone Department Exam) --</option>
+                  {coeSessions.map(s => (
+                    <option key={s.id} value={s.id}>{s.name} (Starts: {s.start_date})</option>
+                  ))}
+                </select>
+                <p style={{ margin: '4px 0 0 0', fontSize: '0.7rem', color: '#64748B' }}>
+                  Linking ensures that eligibility rules are checked against the exact final exam session.
+                </p>
               </div>
 
               <div>

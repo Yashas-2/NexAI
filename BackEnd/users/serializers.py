@@ -30,6 +30,9 @@ class NexAITokenObtainPairSerializer(TokenObtainPairSerializer):
             "full_name": self.user.full_name,
             "role": self.user.role,
         }
+        if self.user.department:
+            data["user"]["department_id"] = str(self.user.department.id)
+            data["user"]["department_code"] = self.user.department.code
         return data
 
 
@@ -41,14 +44,41 @@ class DepartmentSerializer(serializers.ModelSerializer):
 
 class UserSerializer(serializers.ModelSerializer):
     department = DepartmentSerializer(read_only=True)
+    usn = serializers.CharField(source='student_profile.usn', read_only=True, default=None)
+    semester = serializers.IntegerField(source='student_profile.current_semester', read_only=True, default=None)
+
+    # Allow write for basic user fields and nested fields
+    write_usn = serializers.CharField(write_only=True, required=False)
+    write_semester = serializers.IntegerField(write_only=True, required=False)
 
     class Meta:
         model = User
         fields = [
             "id", "email", "full_name", "phone", "employee_id",
-            "role", "department", "is_active", "created_at",
+            "role", "department", "is_active", "created_at", "plain_password",
+            "usn", "semester", "write_usn", "write_semester"
         ]
-        read_only_fields = ["id", "created_at"]
+        read_only_fields = ["id", "created_at", "plain_password"]
+
+    def update(self, instance, validated_data):
+        write_usn = validated_data.pop('write_usn', None)
+        write_semester = validated_data.pop('write_semester', None)
+
+        # Update base User fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        # Update Student profile fields if applicable
+        if instance.role == "STUDENT" and hasattr(instance, 'student_profile'):
+            student = instance.student_profile
+            if write_usn is not None:
+                student.usn = write_usn
+            if write_semester is not None:
+                student.current_semester = write_semester
+            student.save(update_fields=['usn', 'current_semester'])
+
+        return instance
 
 
 class UserCreateSerializer(serializers.ModelSerializer):
@@ -65,6 +95,7 @@ class UserCreateSerializer(serializers.ModelSerializer):
         password = validated_data.pop("password")
         user = User(**validated_data)
         user.set_password(password)
+        user.plain_password = password
         user.save()
         return user
 

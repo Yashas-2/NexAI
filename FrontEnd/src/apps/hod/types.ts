@@ -82,10 +82,12 @@ export interface CIEMarksSheet {
 export interface CourseOutcome {
   id: string; // e.g. "CO1"
   description: string;
-  mappedPOs: string[]; // e.g. ["PO1", "PO2", "PO4"]
+  mappedPOs: string[]; // Legacy/simplified display
+  coPoMapping?: Record<string, number>; // Maps PO id to score 1-3
 }
 
 export interface CourseRecord {
+  id: string;
   code: string;
   title: string;
   department: string;
@@ -96,6 +98,8 @@ export interface CourseRecord {
   assignedFacultyId?: string;
   assignedFacultyName?: string;
   outcomes: CourseOutcome[];
+  coList: string[]; // "CO1", "CO2"
+  coPoMapping: Record<string, Record<string, number>>;
   syllabusModules: string[];
 }
 

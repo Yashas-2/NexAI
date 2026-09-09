@@ -10,6 +10,7 @@ interface SeatingBlueprintProps {
   roomResults: RoomAllocationResult[];
   telemetry?: AITelemetryMetrics;
   scopeConfig?: SessionScopeConfig;
+  sessionId?: string;
   onReturn: () => void;
 }
 
@@ -17,6 +18,7 @@ export const SeatingBlueprint: React.FC<SeatingBlueprintProps> = ({
   roomResults,
   telemetry,
   scopeConfig,
+  sessionId,
   onReturn,
 }) => {
   const [activeTab, setActiveTab] = useState<'FLOOR_PLANS' | 'INVIGILATORS'>('FLOOR_PLANS');
@@ -36,6 +38,7 @@ export const SeatingBlueprint: React.FC<SeatingBlueprintProps> = ({
         roomResults={roomResults}
         telemetry={telemetry}
         scopeConfig={scopeConfig}
+        sessionId={sessionId}
         onOpenNotice={() => setShowNoticeModal(true)}
         onReturn={onReturn}
       />

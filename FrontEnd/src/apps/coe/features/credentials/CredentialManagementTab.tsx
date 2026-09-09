@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { PageHeader } from '@/components/ui/PageHeader';
+import { api } from '@/services/api';
 import {
   KeyRound,
   Users,
@@ -16,7 +17,7 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
-export type OfficerRole = 'HOD' | 'SCRUTINIZER' | 'SCANNING_OFFICER';
+export type OfficerRole = 'HOD' | 'SCRUTINIZER' | 'SCANNING_OFFICER' | 'EVALUATOR' | 'INVIGILATOR' | 'PAPER_SETTER' | 'FACULTY' | 'STUDENT' | 'ADMISSION' | 'ADMIN';
 
 export interface OfficerCredential {
   id: string;
@@ -32,153 +33,44 @@ export interface OfficerCredential {
   portalPath: string;
 }
 
-const INITIAL_OFFICERS: OfficerCredential[] = [
-  {
-    id: 'off_01',
-    name: 'Dr. Grace Hopper',
-    email: 'hod.cse@univ.edu',
-    role: 'HOD',
-    department: 'Computer Science & Engineering',
-    designation: 'Professor & Head of Department',
-    status: 'ACTIVE',
-    tempPassword: 'HOD-CSE-Fall26!',
-    lastLogin: 'Today, 09:15 AM',
-    issuedAt: '2026-08-20',
-    portalPath: '/hod',
-  },
-  {
-    id: 'off_02',
-    name: 'Dr. Claude Shannon',
-    email: 'hod.ece@univ.edu',
-    role: 'HOD',
-    department: 'Electronics & Communication',
-    designation: 'Professor & Head of Department',
-    status: 'ACTIVE',
-    tempPassword: 'HOD-ECE-2026*9',
-    lastLogin: 'Yesterday, 04:30 PM',
-    issuedAt: '2026-08-20',
-    portalPath: '/hod',
-  },
-  {
-    id: 'off_03',
-    name: 'Dr. James Watt',
-    email: 'hod.me@univ.edu',
-    role: 'HOD',
-    department: 'Mechanical Engineering',
-    designation: 'Professor & Head of Department',
-    status: 'PROVISIONED',
-    tempPassword: 'HOD-ME-Init#26',
-    issuedAt: '2026-09-01',
-    portalPath: '/hod',
-  },
-  {
-    id: 'off_04',
-    name: 'Dr. M. Visvesvaraya',
-    email: 'hod.cv@univ.edu',
-    role: 'HOD',
-    department: 'Civil Engineering',
-    designation: 'Professor & Head of Department',
-    status: 'ACTIVE',
-    tempPassword: 'HOD-CV-Fall26!',
-    lastLogin: '2 days ago',
-    issuedAt: '2026-08-22',
-    portalPath: '/hod',
-  },
-  {
-    id: 'off_05',
-    name: 'Dr. Geoffrey Hinton',
-    email: 'hod.aiml@univ.edu',
-    role: 'HOD',
-    department: 'Artificial Intelligence & ML',
-    designation: 'Associate Professor & HOD I/C',
-    status: 'PROVISIONED',
-    tempPassword: 'HOD-AIML-Temp#1',
-    issuedAt: '2026-09-02',
-    portalPath: '/hod',
-  },
-  {
-    id: 'off_06',
-    name: 'Prof. Alan Kay',
-    email: 'scrutinizer.cse@univ.edu',
-    role: 'SCRUTINIZER',
-    department: 'Board of Paper Scrutineers (CSE)',
-    designation: 'Senior External Scrutiny Officer',
-    status: 'ACTIVE',
-    tempPassword: 'Scrutiny#CSE$2026',
-    lastLogin: 'Today, 10:45 AM',
-    issuedAt: '2026-08-25',
-    portalPath: '/scrutinizer',
-  },
-  {
-    id: 'off_07',
-    name: 'Dr. Ada Lovelace',
-    email: 'scrutinizer.math@univ.edu',
-    role: 'SCRUTINIZER',
-    department: 'Board of Paper Scrutineers (Math)',
-    designation: 'Board Scrutiny Chairperson',
-    status: 'ACTIVE',
-    tempPassword: 'Scrutiny*Math#99',
-    lastLogin: 'Yesterday, 02:10 PM',
-    issuedAt: '2026-08-25',
-    portalPath: '/scrutinizer',
-  },
-  {
-    id: 'off_08',
-    name: 'Prof. Richard Feynman',
-    email: 'scrutinizer.phys@univ.edu',
-    role: 'SCRUTINIZER',
-    department: 'Board of Paper Scrutineers (Physics)',
-    designation: 'Subject Expert Scrutinizer',
-    status: 'PROVISIONED',
-    tempPassword: 'Scrutiny#Phys!26',
-    issuedAt: '2026-09-01',
-    portalPath: '/scrutinizer',
-  },
-  {
-    id: 'off_09',
-    name: 'Officer K. Ramesh',
-    email: 'scanning.center1@univ.edu',
-    role: 'SCANNING_OFFICER',
-    department: 'Central Digitization Center Desk #1',
-    designation: 'Scanning Center Superintendent',
-    status: 'ACTIVE',
-    tempPassword: 'ScanDesk@Fall26',
-    lastLogin: 'Today, 08:00 AM',
-    issuedAt: '2026-08-15',
-    portalPath: '/scanning',
-  },
-  {
-    id: 'off_10',
-    name: 'Officer Priya Sharma',
-    email: 'scanning.center2@univ.edu',
-    role: 'SCANNING_OFFICER',
-    department: 'Central Digitization Center Desk #2',
-    designation: 'High-Speed Scanner Supervisor',
-    status: 'PROVISIONED',
-    tempPassword: 'ScanDesk#Init92',
-    issuedAt: '2026-09-02',
-    portalPath: '/scanning',
-  },
-];
-
 export const CredentialManagementTab: React.FC = () => {
-  const [officers, setOfficers] = useState<OfficerCredential[]>(() => {
-    try {
-      const saved = localStorage.getItem('nexai_coe_officer_credentials');
-      return saved ? JSON.parse(saved) : INITIAL_OFFICERS;
-    } catch {
-      return INITIAL_OFFICERS;
-    }
-  });
+  const [officers, setOfficers] = useState<OfficerCredential[]>([]);
+  const [departments, setDepartments] = useState<{ id: string; name: string; code: string }[]>([]);
 
-  const saveOfficers = (list: OfficerCredential[]) => {
-    setOfficers(list);
+  const fetchOfficers = async () => {
     try {
-      localStorage.setItem('nexai_coe_officer_credentials', JSON.stringify(list));
+      const res = await api.get('/auth/users/');
+      const users = res.data.results || res.data;
+      const managed_roles = ['HOD', 'SCRUTINIZER', 'SCANNING_OFFICER', 'EVALUATOR', 'INVIGILATOR', 'PAPER_SETTER', 'FACULTY', 'STUDENT', 'ADMISSION', 'ADMIN'];
+      const mapped = users.filter((u: any) => managed_roles.includes(u.role)).map((u: any) => ({
+        id: u.id,
+        name: u.full_name,
+        email: u.email,
+        role: u.role as OfficerRole,
+        department: u.department?.name || 'Central Unit',
+        designation: u.role === 'HOD' ? 'Head of Department' : u.role === 'SCRUTINIZER' ? 'Scrutinizer' : u.role === 'SCANNING_OFFICER' ? 'Scanning Officer' : u.role === 'EVALUATOR' ? 'Evaluator' : u.role === 'INVIGILATOR' ? 'Invigilator' : u.role === 'PAPER_SETTER' ? 'Paper Setter' : u.role === 'STUDENT' ? 'Student' : u.role === 'ADMISSION' ? 'Admission Officer' : u.role === 'ADMIN' ? 'System Admin' : 'Faculty',
+        status: u.is_active ? 'ACTIVE' : 'SUSPENDED',
+        tempPassword: u.plain_password || '••••••••••••',
+        issuedAt: new Date(u.created_at).toLocaleDateString(),
+        portalPath: u.role === 'HOD' ? '/hod' : u.role === 'SCRUTINIZER' ? '/scrutinizer' : u.role === 'SCANNING_OFFICER' ? '/scanning' : u.role === 'EVALUATOR' ? '/evaluator' : u.role === 'STUDENT' ? '/mobile-app' : u.role === 'ADMISSION' ? '/admission' : u.role === 'ADMIN' ? '/admin' : '/faculty',
+      }));
+      setOfficers(mapped);
     } catch (e) {
-      console.error(e);
+      toast.error('Failed to load credentials');
     }
   };
+
+  const fetchDepartments = async () => {
+    try {
+      const res = await api.get('/auth/departments/');
+      setDepartments(res.data.results || res.data);
+    } catch { /* silently fail */ }
+  };
+
+  useEffect(() => {
+    fetchOfficers();
+    fetchDepartments();
+  }, []);
 
   const [roleFilter, setRoleFilter] = useState<'ALL' | OfficerRole>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
@@ -189,7 +81,7 @@ export const CredentialManagementTab: React.FC = () => {
   const [newOfficerName, setNewOfficerName] = useState('');
   const [newOfficerEmail, setNewOfficerEmail] = useState('');
   const [newOfficerRole, setNewOfficerRole] = useState<OfficerRole>('HOD');
-  const [newOfficerDept, setNewOfficerDept] = useState('Computer Science & Engineering');
+  const [newOfficerDeptId, setNewOfficerDeptId] = useState('');
   const [newOfficerDesignation, setNewOfficerDesignation] = useState('Professor & Head of Department');
   const [newOfficerPassword, setNewOfficerPassword] = useState(`Pass-${Math.random().toString(36).substring(2, 7).toUpperCase()}!26`);
 
@@ -219,88 +111,91 @@ export const CredentialManagementTab: React.FC = () => {
     toast.success(`Full credentials package for ${officer.name} copied to clipboard!`, { icon: '🔐', duration: 4000 });
   };
 
-  const handleResetPassword = (id: string) => {
+  const handleResetPassword = async (id: string) => {
     const target = officers.find(o => o.id === id);
     if (!target) return;
 
     const freshPassword = generateRandomPassword(target.role);
-    const updated = officers.map(o =>
-      o.id === id
-        ? {
-            ...o,
-            tempPassword: freshPassword,
-            status: 'PROVISIONED' as const,
-            issuedAt: new Date().toISOString().slice(0, 10),
-          }
-        : o
-    );
-
-    saveOfficers(updated);
-    toast.success(`Credentials reset for ${target.name}! New Passcode: ${freshPassword}`, { icon: '🔄', duration: 5000 });
+    try {
+      await api.post(`/auth/users/${id}/reset-password/`, { new_password: freshPassword });
+      toast.success(`Credentials reset for ${target.name}! New Passcode: ${freshPassword}`, { icon: '🔄', duration: 5000 });
+      setOfficers(prev => prev.map(o => o.id === id ? { ...o, tempPassword: freshPassword, status: 'ACTIVE' } : o));
+    } catch (e: any) {
+      toast.error(e.response?.data?.error || 'Failed to reset password');
+    }
   };
 
-  const handleToggleStatus = (id: string) => {
-    const updated: OfficerCredential[] = officers.map(o => {
-      if (o.id === id) {
-        const nextStatus: 'ACTIVE' | 'SUSPENDED' = o.status === 'SUSPENDED' ? 'ACTIVE' : 'SUSPENDED';
-        toast.success(`Access for ${o.name} is now ${nextStatus}`);
-        return { ...o, status: nextStatus };
+  const handleToggleStatus = async (id: string) => {
+    const target = officers.find(o => o.id === id);
+    if (!target) return;
+    
+    try {
+      if (target.status === 'ACTIVE') {
+        await api.post(`/auth/users/${id}/suspend/`);
+        toast.success(`Access for ${target.name} suspended`);
+      } else {
+        await api.post(`/auth/users/${id}/restore/`);
+        toast.success(`Access for ${target.name} restored`);
       }
-      return o;
-    });
-    saveOfficers(updated);
+      fetchOfficers();
+    } catch (e) {
+      toast.error('Failed to update status');
+    }
   };
 
-  const handleCreateOfficer = (e: React.FormEvent) => {
+  const handleCreateOfficer = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newOfficerName.trim() || !newOfficerEmail.trim()) {
-      toast.error('Please enter complete officer details.');
+      toast.error('Please enter name and email.');
       return;
     }
 
-    const portalPath =
-      newOfficerRole === 'HOD'
-        ? '/hod'
-        : newOfficerRole === 'SCRUTINIZER'
-        ? '/scrutinizer'
-        : '/scanning';
-
-    const newOfficer: OfficerCredential = {
-      id: `off_${Date.now().toString().slice(-4)}`,
-      name: newOfficerName.trim(),
-      email: newOfficerEmail.trim().toLowerCase(),
-      role: newOfficerRole,
-      department: newOfficerDept,
-      designation: newOfficerDesignation,
-      status: 'PROVISIONED',
-      tempPassword: newOfficerPassword,
-      issuedAt: new Date().toISOString().slice(0, 10),
-      portalPath,
-    };
-
-    saveOfficers([newOfficer, ...officers]);
-    setIsModalOpen(false);
-    toast.success(`Institutional credentials generated and provisioned for ${newOfficer.name}!`, { icon: '🎉', duration: 4500 });
-
-    // Reset modal form
-    setNewOfficerName('');
-    setNewOfficerEmail('');
-    setNewOfficerPassword(generateRandomPassword('HOD'));
+    try {
+      const payload: Record<string, any> = {
+        full_name: newOfficerName.trim(),
+        email: newOfficerEmail.trim().toLowerCase(),
+        role: newOfficerRole,
+        password: newOfficerPassword,
+      };
+      if (newOfficerDeptId) payload.department = newOfficerDeptId;
+      
+      const res = await api.post('/auth/users/create/', payload);
+      const returnedPassword = res.data.temp_password || newOfficerPassword;
+      toast.success(`Credentials issued for ${payload.full_name}! Password: ${returnedPassword}`, { icon: '🎉', duration: 6000 });
+      
+      // Show the real password in the table row
+      await fetchOfficers();
+      setOfficers(prev => prev.map(o => o.email === payload.email ? { ...o, tempPassword: returnedPassword } : o));
+      
+      setIsModalOpen(false);
+      setNewOfficerName('');
+      setNewOfficerEmail('');
+      setNewOfficerDeptId('');
+      setNewOfficerPassword(generateRandomPassword(newOfficerRole));
+    } catch (e: any) {
+      const errMsg = e.response?.data?.email?.[0] || e.response?.data?.error || e.response?.data?.detail || 'Failed to create officer.';
+      toast.error(errMsg);
+    }
   };
 
   // Filtered list
   const filteredOfficers = officers.filter(o => {
     const matchesRole = roleFilter === 'ALL' || o.role === roleFilter;
     const matchesQuery =
-      o.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      o.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      o.department.toLowerCase().includes(searchQuery.toLowerCase());
+      (o.name || '').toLowerCase().includes((searchQuery || '').toLowerCase()) ||
+      (o.email || '').toLowerCase().includes((searchQuery || '').toLowerCase()) ||
+      (o.department || '').toLowerCase().includes((searchQuery || '').toLowerCase());
     return matchesRole && matchesQuery;
   });
 
   const hodCount = officers.filter(o => o.role === 'HOD').length;
   const scrutCount = officers.filter(o => o.role === 'SCRUTINIZER').length;
   const scanCount = officers.filter(o => o.role === 'SCANNING_OFFICER').length;
+  const evalCount = officers.filter(o => o.role === 'EVALUATOR').length;
+  const invigCount = officers.filter(o => o.role === 'INVIGILATOR').length;
+  const setterCount = officers.filter(o => o.role === 'PAPER_SETTER').length;
+  const facultyCount = officers.filter(o => o.role === 'FACULTY').length;
+  const studentCount = officers.filter(o => o.role === 'STUDENT').length;
 
   return (
     <div style={{ position: 'relative', overflow: 'hidden' }}>
@@ -449,17 +344,62 @@ export const CredentialManagementTab: React.FC = () => {
             <button
               onClick={() => setRoleFilter('SCANNING_OFFICER')}
               style={{
-                padding: '6px 14px',
-                borderRadius: '6px',
-                border: 'none',
-                fontSize: '0.8rem',
-                fontWeight: 800,
-                cursor: 'pointer',
+                padding: '6px 14px', borderRadius: '6px', border: 'none', fontSize: '0.8rem', fontWeight: 800, cursor: 'pointer',
                 background: roleFilter === 'SCANNING_OFFICER' ? '#059669' : 'transparent',
                 color: roleFilter === 'SCANNING_OFFICER' ? 'white' : '#64748B',
               }}
             >
               Scanning Desk ({scanCount})
+            </button>
+            <button
+              onClick={() => setRoleFilter('STUDENT')}
+              style={{
+                padding: '6px 14px', borderRadius: '6px', border: 'none', fontSize: '0.8rem', fontWeight: 800, cursor: 'pointer',
+                background: roleFilter === 'STUDENT' ? '#10B981' : 'transparent',
+                color: roleFilter === 'STUDENT' ? 'white' : '#64748B',
+              }}
+            >
+              Students ({studentCount})
+            </button>
+            <button
+              onClick={() => setRoleFilter('EVALUATOR')}
+              style={{
+                padding: '6px 14px', borderRadius: '6px', border: 'none', fontSize: '0.8rem', fontWeight: 800, cursor: 'pointer',
+                background: roleFilter === 'EVALUATOR' ? '#8B5CF6' : 'transparent',
+                color: roleFilter === 'EVALUATOR' ? 'white' : '#64748B',
+              }}
+            >
+              Evaluators ({evalCount})
+            </button>
+            <button
+              onClick={() => setRoleFilter('INVIGILATOR')}
+              style={{
+                padding: '6px 14px', borderRadius: '6px', border: 'none', fontSize: '0.8rem', fontWeight: 800, cursor: 'pointer',
+                background: roleFilter === 'INVIGILATOR' ? '#EC4899' : 'transparent',
+                color: roleFilter === 'INVIGILATOR' ? 'white' : '#64748B',
+              }}
+            >
+              Invigilators ({invigCount})
+            </button>
+            <button
+              onClick={() => setRoleFilter('PAPER_SETTER')}
+              style={{
+                padding: '6px 14px', borderRadius: '6px', border: 'none', fontSize: '0.8rem', fontWeight: 800, cursor: 'pointer',
+                background: roleFilter === 'PAPER_SETTER' ? '#3B82F6' : 'transparent',
+                color: roleFilter === 'PAPER_SETTER' ? 'white' : '#64748B',
+              }}
+            >
+              Paper Setters ({setterCount})
+            </button>
+            <button
+              onClick={() => setRoleFilter('FACULTY')}
+              style={{
+                padding: '6px 14px', borderRadius: '6px', border: 'none', fontSize: '0.8rem', fontWeight: 800, cursor: 'pointer',
+                background: roleFilter === 'FACULTY' ? '#64748B' : 'transparent',
+                color: roleFilter === 'FACULTY' ? 'white' : '#64748B',
+              }}
+            >
+              Faculty ({facultyCount})
             </button>
           </div>
 
@@ -517,13 +457,13 @@ export const CredentialManagementTab: React.FC = () => {
                       HOD: { bg: '#EEF2FF', text: '#4F46E5', label: 'HOD PORTAL (/hod)' },
                       SCRUTINIZER: { bg: '#FEF3C7', text: '#B45309', label: 'SCRUTINIZER (/scrutinizer)' },
                       SCANNING_OFFICER: { bg: '#ECFDF5', text: '#047857', label: 'SCANNING DESK (/scanning)' },
-                    }[officer.role];
+                    }[officer.role] || { bg: '#F1F5F9', text: '#475569', label: `${officer.role} PORTAL` };
 
                     const statusBadge = {
                       ACTIVE: { bg: '#DCFCE7', text: '#15803D', label: 'ACTIVE' },
                       PROVISIONED: { bg: '#FEF9C3', text: '#A16207', label: 'PROVISIONED' },
                       SUSPENDED: { bg: '#FEE2E2', text: '#B91C1C', label: 'SUSPENDED' },
-                    }[officer.status];
+                    }[officer.status || 'ACTIVE'] || { bg: '#F1F5F9', text: '#475569', label: String(officer.status) };
 
                     return (
                       <tr key={officer.id} style={{ borderBottom: '1px solid #F1F5F9' }}>
@@ -755,13 +695,28 @@ export const CredentialManagementTab: React.FC = () => {
                       setNewOfficerPassword(generateRandomPassword(r));
                       if (r === 'HOD') setNewOfficerDesignation('Professor & Head of Department');
                       else if (r === 'SCRUTINIZER') setNewOfficerDesignation('Question Paper Scrutiny Officer');
-                      else setNewOfficerDesignation('Scanning Center Superintendent');
+                      else if (r === 'SCANNING_OFFICER') setNewOfficerDesignation('Scanning Center Superintendent');
+                      else if (r === 'EVALUATOR') setNewOfficerDesignation('Evaluator');
+                      else if (r === 'INVIGILATOR') setNewOfficerDesignation('Invigilator');
+                      else if (r === 'FACULTY') setNewOfficerDesignation('Faculty');
+                      else if (r === 'PAPER_SETTER') setNewOfficerDesignation('Paper Setter');
+                      else if (r === 'STUDENT') setNewOfficerDesignation('Student');
+                      else if (r === 'ADMISSION') setNewOfficerDesignation('Admission Officer');
+                      else if (r === 'ADMIN') setNewOfficerDesignation('System Administrator');
+                      else setNewOfficerDesignation('Officer');
                     }}
                     style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1.5px solid #CBD5E1', fontSize: '0.85rem', fontWeight: 800, background: 'white' }}
                   >
                     <option value="HOD">Head of Department (HOD Portal)</option>
                     <option value="SCRUTINIZER">QP Scrutinizer (Board of Examination Scrutiny)</option>
                     <option value="SCANNING_OFFICER">Scanning Center Superintendent (Digital Scanning Center)</option>
+                    <option value="EVALUATOR">Evaluator (Valuation Portal)</option>
+                    <option value="INVIGILATOR">Invigilator (Invigilation Portal)</option>
+                    <option value="PAPER_SETTER">Paper Setter (Question Paper Authoring)</option>
+                    <option value="FACULTY">Faculty (Faculty Portal)</option>
+                    <option value="STUDENT">Student (Student App)</option>
+                    <option value="ADMISSION">Admission Officer (Admission Portal)</option>
+                    <option value="ADMIN">Admin (Admin Portal)</option>
                   </select>
                 </div>
 
@@ -800,14 +755,16 @@ export const CredentialManagementTab: React.FC = () => {
                   <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 800, color: '#0F172A', marginBottom: '4px' }}>
                     Academic Department / Valuation Center:
                   </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="e.g. Computer Science & Engineering"
-                    value={newOfficerDept}
-                    onChange={e => setNewOfficerDept(e.target.value)}
-                    style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #CBD5E1', fontSize: '0.85rem', boxSizing: 'border-box' }}
-                  />
+                  <select
+                    value={newOfficerDeptId}
+                    onChange={e => setNewOfficerDeptId(e.target.value)}
+                    style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1.5px solid #CBD5E1', fontSize: '0.85rem', background: 'white' }}
+                  >
+                    <option value="">— Central / Not Department-Specific —</option>
+                    {departments.map(d => (
+                      <option key={d.id} value={d.id}>{d.name} ({d.code})</option>
+                    ))}
+                  </select>
                 </div>
 
                 {/* Designation */}

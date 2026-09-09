@@ -64,3 +64,63 @@ class ScanningSession(models.Model):
             f"Session {self.session_token} | "
             f"{self.timetable_slot} [{self.status}]"
         )
+
+
+class BookletPacket(models.Model):
+    """
+    A single scanned answer booklet uploaded during a ScanningSession.
+    Each packet is linked to a student (via USN) and an exam slot.
+    """
+
+    class PacketStatus(models.TextChoices):
+        UPLOADED = "UPLOADED", "Uploaded"
+        PROCESSING = "PROCESSING", "Processing"
+        LINKED = "LINKED", "Linked to Student"
+        FAILED = "FAILED", "Failed to Process"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    scanning_session = models.ForeignKey(
+        ScanningSession,
+        on_delete=models.PROTECT,
+        related_name="booklet_packets",
+    )
+
+    # The student this booklet belongs to (matched by USN on the cover page)
+    student = models.ForeignKey(
+        "users.Student",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="booklet_packets",
+    )
+
+    # USN entered manually by the scanning officer (before AI links it to a student)
+    student_usn = models.CharField(
+        max_length=20,
+        help_text="USN as written on the booklet cover page",
+    )
+
+    # Uploaded image / PDF file stored in MinIO via Django Storages
+    booklet_file = models.FileField(
+        upload_to="scanning/booklets/%Y/%m/",
+        help_text="Scanned PDF or image of the answer booklet",
+    )
+
+    page_count = models.PositiveSmallIntegerField(default=0)
+    status = models.CharField(
+        max_length=15,
+        choices=PacketStatus.choices,
+        default=PacketStatus.UPLOADED,
+        db_index=True,
+    )
+
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    error_message = models.TextField(blank=True)
+
+    class Meta:
+        db_table = "scanning_booklet_packet"
+        ordering = ["-uploaded_at"]
+
+    def __str__(self):
+        return f"Booklet [{self.student_usn}] – {self.status}"

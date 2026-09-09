@@ -118,6 +118,7 @@ export interface SessionScopeConfig {
   selectedSemesters: SemesterNumber[];
   examsPerDay: 1 | 2;
   startDate: string;
+  endDate: string;
   selectedSlots: TimeSlot[];
   specialInstructions?: string;
 }

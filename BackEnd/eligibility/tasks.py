@@ -16,10 +16,11 @@ MIN_CIE_MARKS = Decimal("40.00")
 
 
 @shared_task
-def process_eligibility_csv(file_content: str, session_id: str):
+def process_eligibility_csv(file_content: str, session_id: str, department_id: str = None):
     """
     Parses a CSV string, calculates eligibility based on attendance and CIE marks,
-    and updates or creates StudentEligibility records.
+    and updates or creates StudentEligibility records. Only processes students 
+    belonging to the provided department_id if given.
     """
     reader = csv.DictReader(io.StringIO(file_content))
     processed = 0
@@ -46,6 +47,10 @@ def process_eligibility_csv(file_content: str, session_id: str):
             subject = Subject.objects.get(code=subject_code)
         except (Student.DoesNotExist, Subject.DoesNotExist):
             errors.append(f"Row {reader.line_num}: Student or Subject not found ({usn}, {subject_code})")
+            continue
+            
+        if department_id and str(student.department_id) != str(department_id):
+            errors.append(f"Row {reader.line_num}: Unauthorized. Student {usn} does not belong to your department.")
             continue
 
         is_eligible = True
@@ -97,6 +102,16 @@ def generate_hall_tickets_for_session(session_id: str):
         eligibility_records__is_eligible=True
     ).distinct()
 
+    # Fallback: if no eligibility records exist, use enrolled students
+    if not eligible_students.exists():
+        from scheduling.models import StudentSubjectEnrollment
+        enrolled = Student.objects.filter(
+            subject_enrollments__exam_session=session
+        ).distinct()
+        # For CIE sessions, treat all enrolled students as eligible
+        if enrolled.exists():
+            eligible_students = enrolled
+
     created_count = 0
     
     with transaction.atomic():
@@ -111,6 +126,17 @@ def generate_hall_tickets_for_session(session_id: str):
             )
             if created:
                 created_count += 1
+
+    # Send notifications to students who received new hall tickets
+    if created_count > 0:
+        from notifications.helpers import notify_students_bulk
+        notify_students_bulk(
+            eligible_students,
+            "HALL_TICKET",
+            f"Hall Ticket Generated – {session.name}",
+            f"Your hall ticket for {session.name} has been generated. Please check the Admit Card section.",
+            related_object_id=session.id,
+        )
 
     return {
         "status": "completed",

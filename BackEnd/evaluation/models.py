@@ -6,6 +6,31 @@ import uuid
 from django.db import models
 
 
+class EvaluationBundle(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=100)
+    evaluator = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="evaluation_bundles",
+        limit_choices_to={"role__in": ["EVALUATOR", "SCRUTINIZER", "FACULTY"]},
+    )
+    subject = models.ForeignKey("scheduling.Subject", on_delete=models.CASCADE)
+    exam_session = models.ForeignKey("scheduling.ExamSession", on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+    status = models.CharField(
+        max_length=20, 
+        choices=[("ASSIGNED", "Assigned"), ("IN_PROGRESS", "In Progress"), ("COMPLETED", "Completed")],
+        default="ASSIGNED"
+    )
+
+    class Meta:
+        db_table = "evaluation_bundle"
+
+    def __str__(self):
+        return f"{self.name} - {self.evaluator.full_name if self.evaluator else 'Unassigned'}"
+
 class AnswerScript(models.Model):
     """
     Digitized, anonymized answer booklet uploaded by an Invigilator
@@ -99,7 +124,14 @@ class AnswerScript(models.Model):
         null=True,
         blank=True,
         related_name="assigned_scripts",
-        limit_choices_to={"role__in": ["EVALUATOR", "SCRUTINIZER"]},
+        limit_choices_to={"role__in": ["EVALUATOR", "SCRUTINIZER", "FACULTY"]},
+    )
+    evaluation_bundle = models.ForeignKey(
+        "EvaluationBundle",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="answer_scripts",
     )
 
     created_at = models.DateTimeField(auto_now_add=True)

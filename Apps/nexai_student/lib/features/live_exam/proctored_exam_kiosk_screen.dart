@@ -3,10 +3,11 @@ import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../core/theme/app_theme.dart';
 import '../../models/student_models.dart';
-import '../../mock_data.dart';
 import '../exam_sandbox/widgets/digital_paper_canvas.dart';
 import '../exam_sandbox/widgets/full_question_paper_modal.dart';
 import 'widgets/ai_proctor_camera_bubble.dart';
+import '../../services/api_service.dart';
+import 'dart:async';
 
 enum ResponseInputMode { digitalPen, typedText, mcq }
 
@@ -31,6 +32,9 @@ class _ProctoredExamKioskScreenState extends State<ProctoredExamKioskScreen> wit
   ResponseInputMode _inputMode = ResponseInputMode.digitalPen;
   bool _isQuestionExpanded = true;
   int _strikeCount = 0;
+  bool _isLoadingQuestions = true;
+  String? _countdownMessage;
+  Timer? _countdownTimer;
 
   final TextEditingController _answerController = TextEditingController();
   static const platform = MethodChannel('com.nexai.kiosk/lock');
@@ -44,8 +48,89 @@ class _ProctoredExamKioskScreenState extends State<ProctoredExamKioskScreen> wit
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     _enableKioskMode();
 
-    _questions = mockSandboxQuestions;
-    _updateAnswerController();
+    _fetchQuestions();
+  }
+
+  Future<void> _fetchQuestions() async {
+    if (widget.exam.questionPaperId == null) {
+      setState(() {
+        _questions = [
+          ExamQuestionItem(questionNumber: 1, questionText: 'No Question Paper linked to this exam.', maxMarks: 0, type: 'THEORY'),
+        ];
+        _isLoadingQuestions = false;
+        _updateAnswerController();
+      });
+      return;
+    }
+
+    try {
+      final response = await ApiService.get('/vault/papers/${widget.exam.questionPaperId}/time_release/');
+      
+      if (response['status'] == 'unlocked' || response['status'] == 'unlocked_draft') {
+        final content = response['content'];
+        final questionsList = (content['questions'] as List?)?.map((q) => ExamQuestionItem(
+          questionNumber: q['questionNumber'] ?? 0,
+          questionText: q['questionText'] ?? '',
+          maxMarks: q['marks'] ?? 0,
+          type: q['type'] ?? 'THEORY',
+          options: (q['options'] as List?)?.map((e) => e.toString()).toList(),
+        )).toList() ?? [];
+
+        setState(() {
+          _questions = questionsList.isNotEmpty ? questionsList : [
+            ExamQuestionItem(questionNumber: 1, questionText: 'No questions found in payload.', maxMarks: 0, type: 'THEORY')
+          ];
+          _isLoadingQuestions = false;
+          _countdownTimer?.cancel();
+          _updateAnswerController();
+        });
+      }
+    } catch (e) {
+      final errStr = e.toString();
+      if (errStr.contains('403')) {
+        // Extract remaining seconds if possible, else default to 120
+        final RegExp regex = RegExp(r'remaining_seconds.*?(\d+)');
+        final match = regex.firstMatch(errStr);
+        int remainingSeconds = match != null ? int.parse(match.group(1)!) : 120;
+        
+        setState(() {
+          _isLoadingQuestions = true;
+          _countdownMessage = "Questions unlock in ${_formatDuration(remainingSeconds)}";
+        });
+        
+        _startCountdown(remainingSeconds);
+      } else {
+        setState(() {
+          _questions = [
+            ExamQuestionItem(questionNumber: 1, questionText: 'Error fetching questions: $e', maxMarks: 0, type: 'THEORY'),
+          ];
+          _isLoadingQuestions = false;
+          _updateAnswerController();
+        });
+      }
+    }
+  }
+
+  void _startCountdown(int seconds) {
+    _countdownTimer?.cancel();
+    int current = seconds;
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (current <= 0) {
+        timer.cancel();
+        _fetchQuestions(); // Try fetching again
+      } else {
+        setState(() {
+          current--;
+          _countdownMessage = "Questions unlock in ${_formatDuration(current)}";
+        });
+      }
+    });
+  }
+
+  String _formatDuration(int seconds) {
+    final mins = seconds ~/ 60;
+    final secs = seconds % 60;
+    return '${mins.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
   }
 
   Future<void> _enableKioskMode() async {
@@ -131,6 +216,7 @@ class _ProctoredExamKioskScreenState extends State<ProctoredExamKioskScreen> wit
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _countdownTimer?.cancel();
     // Restore normal system navigation and unpin screen
     _disableKioskMode();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
@@ -224,6 +310,32 @@ class _ProctoredExamKioskScreenState extends State<ProctoredExamKioskScreen> wit
 
   @override
   Widget build(BuildContext context) {
+    if (_isLoadingQuestions) {
+      return Scaffold(
+        backgroundColor: AppTheme.bgBase,
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.lock_clock, color: AppTheme.accentBlue, size: 64),
+              const SizedBox(height: 24),
+              const Text(
+                'Awaiting Vault Decryption',
+                style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w900),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                _countdownMessage ?? 'Loading securely...',
+                style: const TextStyle(color: Colors.white70, fontSize: 16),
+              ),
+              const SizedBox(height: 32),
+              const CircularProgressIndicator(color: AppTheme.accentBlue),
+            ],
+          ),
+        ),
+      );
+    }
+
     // Intercept back button to prevent accidental exit
     return PopScope(
       canPop: _isSubmitted,

@@ -79,3 +79,73 @@ class StudentPortalViewSet(viewsets.ViewSet):
         results = Result.objects.filter(student=student).order_by('-exam_session__start_date', 'subject__code')
         serializer = ResultSerializer(results, many=True)
         return Response(serializer.data)
+
+    @action(detail=False, methods=['get'])
+    def my_enrollments(self, request):
+        from scheduling.models import StudentSubjectEnrollment
+        from scheduling.serializers import StudentSubjectEnrollmentSerializer
+        
+        student = self._get_student(request.user)
+        if not student:
+            return Response({"error": "Student profile not found"}, status=status.HTTP_404_NOT_FOUND)
+            
+        enrollments = StudentSubjectEnrollment.objects.filter(student=student).select_related(
+            "subject", "exam_session"
+        ).order_by('-enrolled_at')
+        
+        # Deduplicate
+        seen_subjects = set()
+        unique_enrollments = []
+        for enrollment in enrollments:
+            if enrollment.subject_id not in seen_subjects:
+                unique_enrollments.append(enrollment)
+                seen_subjects.add(enrollment.subject_id)
+        
+        serializer = StudentSubjectEnrollmentSerializer(unique_enrollments, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'])
+    def my_cie_schedule(self, request):
+        """Returns CIE schedule info for the student including hall/seat allocation."""
+        from scheduling.models import ExamSession
+        student = self._get_student(request.user)
+        if not student:
+            return Response({"error": "Student profile not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        from scheduling.models import TimetableSlot
+
+        # Get CIE sessions the student is enrolled in
+        cie_sessions = ExamSession.objects.filter(
+            session_type='CIE',
+            student_enrollments__student=student,
+        ).distinct()
+
+        schedule = []
+        for session in cie_sessions:
+            # Get timetable slots for this session
+            slots = TimetableSlot.objects.filter(
+                exam_session=session,
+                seat_map__has_key=student.usn,
+            ).select_related('subject', 'room')
+
+            for slot in slots:
+                seat = (slot.seat_map or {}).get(student.usn, 'Unassigned')
+                schedule.append({
+                    'session_name': session.name,
+                    'subject_code': slot.subject.code,
+                    'subject_name': slot.subject.name,
+                    'date': slot.exam_date,
+                    'start_time': slot.start_time,
+                    'end_time': slot.end_time,
+                    'room': slot.room.name if slot.room else 'TBA',
+                    'seat': seat,
+                })
+        return Response(schedule)
+
+
+class SEETestViewSet(viewsets.ViewSet):
+    permission_classes = [IsAuthenticated]
+    
+    @action(detail=False, methods=['get', 'post'])
+    def test_endpoint(self, request):
+        return Response({"status": "ok"})

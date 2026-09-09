@@ -7,10 +7,12 @@ import { SubjectEnrolment } from './components/SubjectEnrolment';
 
 export const CurriculumTab: React.FC = () => {
   const [viewState, setViewState] = useState<'LIST' | 'VIEW_STUDENTS' | 'VIEW_COPO'>('LIST');
+  const [selectedSubjectId, setSelectedSubjectId] = useState('');
   const [selectedSubjectCode, setSelectedSubjectCode] = useState('');
   const [selectedSubjectTitle, setSelectedSubjectTitle] = useState('');
 
-  const handleViewStudents = (code: string, title: string) => {
+  const handleViewStudents = (id: string, code: string, title: string) => {
+    setSelectedSubjectId(id);
     setSelectedSubjectCode(code);
     setSelectedSubjectTitle(title);
     setViewState('VIEW_STUDENTS');
@@ -115,7 +117,7 @@ export const CurriculumTab: React.FC = () => {
         />
 
         {viewState === 'LIST' && <SubjectList onViewStudents={handleViewStudents} />}
-        {viewState === 'VIEW_STUDENTS' && <SubjectEnrolment subjectCode={selectedSubjectCode} subjectTitle={selectedSubjectTitle} />}
+        {viewState === 'VIEW_STUDENTS' && <SubjectEnrolment subjectId={selectedSubjectId} subjectCode={selectedSubjectCode} subjectTitle={selectedSubjectTitle} />}
       </div>
     </div>
   );

@@ -103,3 +103,59 @@ a:hover { color: var(--color-primary-hover); }
   border-radius: var(--radius-full); 
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--color-text-secondary); }
+
+/* ─── Print Styles ───────────────────────────────────────────────────────── */
+@media print {
+  /* Hide the sidebar, background vectors, and other layout elements */
+  aside, svg, .no-print {
+    display: none !important;
+  }
+  
+  /* Reset the main layout to take full page */
+  body, #root, main, div[style*="marginLeft"] {
+    background: white !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+    box-shadow: none !important;
+  }
+  
+  /* Modal wrapper: remove fixed positioning and background tint */
+  .print-modal-wrapper {
+    position: static !important;
+    background: transparent !important;
+    backdrop-filter: none !important;
+    padding: 0 !important;
+    display: block !important;
+  }
+
+  /* Modal container: make it full width, no shadows or rounding */
+  .print-modal-container {
+    width: 100% !important;
+    max-width: none !important;
+    height: auto !important;
+    max-height: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    overflow: visible !important;
+    margin: 0 !important;
+  }
+
+  /* Hide modal close buttons or footer actions */
+  .print-hide {
+    display: none !important;
+  }
+
+  /* Ensure grid columns don't collapse */
+  .print-grid {
+    grid-template-columns: repeat(4, 1fr) !important;
+    page-break-inside: avoid;
+  }
+
+  /* Prevent page breaks inside important blocks */
+  .print-avoid-break {
+    page-break-inside: avoid;
+  }
+}

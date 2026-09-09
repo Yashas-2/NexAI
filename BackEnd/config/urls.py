@@ -14,6 +14,7 @@ urlpatterns = [
     path(API_V1 + "auth/",         include("users.urls")),
     path(API_V1 + "coe/",          include("analytics.urls")),
     path(API_V1 + "hod/",          include("eligibility.urls")),
+    path(API_V1 + "eligibility/",  include("eligibility.urls")),
     path(API_V1 + "vault/",        include("vault.urls")),
     path(API_V1 + "scan/",         include("scanning.urls")),
     path(API_V1 + "evaluation/",   include("evaluation.urls")),
@@ -21,6 +22,7 @@ urlpatterns = [
     path(API_V1 + "student/",      include("student.urls")),
     path(API_V1 + "scheduling/",   include("scheduling.urls")),
     path(API_V1 + "notifications/", include("notifications.urls")),
+    path(API_V1 + "cie/",          include("cie.urls")),
 ]
 
 if settings.DEBUG and "debug_toolbar" in settings.INSTALLED_APPS:

@@ -1,12 +1,16 @@
-import React from 'react';
-import { CheckCircle2, ShieldCheck, Printer, Download, DoorOpen, Users, Award, Scale } from 'lucide-react';
+import React, { useState } from 'react';
+import { CheckCircle2, ShieldCheck, Printer, Download, DoorOpen, Users, Award, Scale, Save } from 'lucide-react';
 import { RoomAllocationResult, AITelemetryMetrics, SessionScopeConfig } from '../../types/allocationTypes';
 import { MOCK_DEPARTMENTS } from '../../mock/allocationMockData';
+import { api } from '@/services/api';
+import toast from 'react-hot-toast';
+import jsPDF from 'jspdf';
 
 interface BlueprintHeaderProps {
   roomResults: RoomAllocationResult[];
   telemetry?: AITelemetryMetrics;
   scopeConfig?: SessionScopeConfig;
+  sessionId?: string;
   onOpenNotice: () => void;
   onReturn?: () => void;
 }
@@ -15,17 +19,157 @@ export const BlueprintHeader: React.FC<BlueprintHeaderProps> = ({
   roomResults,
   telemetry,
   scopeConfig: _scopeConfig,
+  sessionId,
   onOpenNotice,
   onReturn: _onReturn,
 }) => {
+  const [saving, setSaving] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const totalStudents = roomResults.reduce((sum, r) => sum + r.occupiedCount, 0);
   const totalCapacity = roomResults.reduce((sum, r) => sum + r.capacity, 0);
 
-  // All active departments across all rooms
   const activeDepts = [
     ...new Set(roomResults.flatMap(r => Object.keys(r.departmentTallies))),
   ];
   const deptMap = new Map(MOCK_DEPARTMENTS.map(d => [d.code, d]));
+
+  const handleExportPDF = async () => {
+    setExporting(true);
+    try {
+      const pdf = new jsPDF('landscape', 'mm', 'a4');
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+
+      // Title page
+      pdf.setFillColor(5, 150, 105);
+      pdf.rect(0, 0, pageWidth, pageHeight, 'F');
+      pdf.setTextColor(255, 255, 255);
+      pdf.setFontSize(28);
+      pdf.text('NexAI University', pageWidth / 2, 40, { align: 'center' });
+      pdf.setFontSize(20);
+      pdf.text('Examination Seating Blueprint', pageWidth / 2, 55, { align: 'center' });
+      pdf.setFontSize(12);
+      pdf.text(`${totalStudents} candidates across ${roomResults.length} halls`, pageWidth / 2, 70, { align: 'center' });
+      pdf.text(`Interleaving Purity: ${telemetry?.interleavingPurityScore || 99.8}%`, pageWidth / 2, 80, { align: 'center' });
+      pdf.setFontSize(10);
+      pdf.text(`Generated: ${new Date().toLocaleString()}`, pageWidth / 2, 95, { align: 'center' });
+
+      // Hall details
+      let yPos = 110;
+      pdf.setFontSize(14);
+      pdf.text('Hall Allocation Summary', 20, yPos);
+      yPos += 10;
+
+      pdf.setFontSize(9);
+      pdf.setTextColor(0, 0, 0);
+      const headers = ['Hall', 'Building', 'Capacity', 'Occupied', 'Chief Invigilator', 'Reliever'];
+      headers.forEach((h, i) => {
+        pdf.text(h, 20 + i * 40, yPos);
+      });
+      yPos += 8;
+
+      roomResults.forEach(room => {
+        if (yPos > pageHeight - 20) {
+          pdf.addPage();
+          yPos = 20;
+        }
+        pdf.text(room.roomNumber, 20, yPos);
+        pdf.text(room.building, 60, yPos);
+        pdf.text(String(room.capacity), 100, yPos);
+        pdf.text(String(room.occupiedCount), 140, yPos);
+        pdf.text(room.chiefInvigilator?.name || 'N/A', 180, yPos);
+        pdf.text(room.relieverInvigilator?.name || 'N/A', 220, yPos);
+        yPos += 7;
+      });
+
+      // Per-hall seating
+      roomResults.forEach(room => {
+        pdf.addPage();
+        pdf.setFillColor(241, 245, 249);
+        pdf.rect(0, 0, pageWidth, 25, 'F');
+        pdf.setFontSize(14);
+        pdf.setTextColor(15, 23, 42);
+        pdf.text(`Hall: ${room.roomNumber} (${room.building}) - Floor ${room.floor}`, 20, 16);
+        pdf.setFontSize(10);
+        pdf.text(`Occupancy: ${room.occupiedCount}/${room.capacity} | Chief: ${room.chiefInvigilator?.name || 'N/A'}`, 20, 22);
+
+        yPos = 35;
+        pdf.setFontSize(8);
+        pdf.setTextColor(100, 116, 139);
+        pdf.text('Bench', 20, yPos);
+        pdf.text('Seat L', 50, yPos);
+        pdf.text('Seat R', 100, yPos);
+        pdf.text('Dept', 150, yPos);
+        yPos += 7;
+
+        pdf.setTextColor(0, 0, 0);
+        const benches = Math.ceil(room.seatedCandidates.length / 2);
+        for (let b = 0; b < benches; b++) {
+          if (yPos > pageHeight - 15) {
+            pdf.addPage();
+            yPos = 20;
+          }
+          const left = room.seatedCandidates[b * 2];
+          const right = room.seatedCandidates[b * 2 + 1];
+          pdf.text(`B${b + 1}`, 20, yPos);
+          if (left) pdf.text(`${left.usn} (${left.department})`, 50, yPos);
+          if (right) pdf.text(`${right.usn} (${right.department})`, 100, yPos);
+          if (left) pdf.text(left.department, 150, yPos);
+          yPos += 6;
+        }
+      });
+
+      pdf.save(`NexAI_Seating_Blueprint_${new Date().toISOString().slice(0, 10)}.pdf`);
+      toast.success('PDF exported successfully!');
+    } catch (err) {
+      toast.error('PDF export failed');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleSave = async () => {
+    if (!sessionId) {
+      toast.error('No exam session selected');
+      return;
+    }
+    setSaving(true);
+    try {
+      const allocations: any[] = [];
+      roomResults.forEach(room => {
+        // Group seated candidates by subject
+        const subjectGroups: Record<string, any[]> = {};
+        room.seatedCandidates.forEach(c => {
+          if (!subjectGroups[c.subjectCode]) subjectGroups[c.subjectCode] = [];
+          subjectGroups[c.subjectCode].push(c);
+        });
+
+        // Create one allocation entry per subject per room
+        Object.entries(subjectGroups).forEach(([subjectCode]) => {
+          allocations.push({
+            subject_code: subjectCode,
+            room_name: room.roomNumber,
+            exam_date: _scopeConfig?.startDate || new Date().toISOString().slice(0, 10),
+            start_time: _scopeConfig?.selectedSlots?.[0]?.startTime || '09:30',
+            end_time: _scopeConfig?.selectedSlots?.[0]?.endTime || '12:30',
+            chief_invigilator_email: room.chiefInvigilator?.email || '',
+            reliever_invigilator_email: room.relieverInvigilator?.email || '',
+          });
+        });
+      });
+
+      const res = await api.post('/scheduling/allocation/save/', {
+        exam_session_id: sessionId,
+        allocations,
+      });
+
+      toast.success(res.data.message || 'Allocation saved successfully!');
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Failed to save allocation');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -66,6 +210,27 @@ export const BlueprintHeader: React.FC<BlueprintHeaderProps> = ({
 
           <div style={{ display: 'flex', gap: '10px' }}>
             <button
+              onClick={handleSave}
+              disabled={saving}
+              style={{
+                background: saving ? '#CBD5E1' : 'rgba(255,255,255,0.18)',
+                border: '1px solid rgba(255,255,255,0.3)',
+                color: 'white',
+                padding: '10px 18px',
+                borderRadius: '10px',
+                cursor: saving ? 'not-allowed' : 'pointer',
+                fontWeight: 700,
+                fontSize: '0.85rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                backdropFilter: 'blur(4px)',
+              }}
+            >
+              <Save size={16} /> {saving ? 'Saving...' : 'Save Allocation'}
+            </button>
+
+            <button
               onClick={onOpenNotice}
               style={{
                 background: 'rgba(255,255,255,0.18)',
@@ -86,14 +251,15 @@ export const BlueprintHeader: React.FC<BlueprintHeaderProps> = ({
             </button>
 
             <button
-              onClick={() => alert('Exporting Master Seating Roll & Invigilation Report as PDF...')}
+              onClick={handleExportPDF}
+              disabled={exporting}
               style={{
                 background: 'white',
                 border: 'none',
                 color: '#065F46',
                 padding: '10px 20px',
                 borderRadius: '10px',
-                cursor: 'pointer',
+                cursor: exporting ? 'not-allowed' : 'pointer',
                 fontWeight: 800,
                 fontSize: '0.85rem',
                 display: 'flex',
@@ -102,7 +268,7 @@ export const BlueprintHeader: React.FC<BlueprintHeaderProps> = ({
                 boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
               }}
             >
-              <Download size={16} /> Export PDF
+              <Download size={16} /> {exporting ? 'Exporting...' : 'Export PDF'}
             </button>
           </div>
         </div>

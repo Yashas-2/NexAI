@@ -1,12 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Sparkles } from 'lucide-react';
+import { api } from '@/services/api';
 
 interface CreateSessionFormProps {
   onCancel: () => void;
   onSave: () => void;
-  onSaveAndAllocate?: () => void;
+  onSaveAndAllocate?: (sessionId: string) => void;
 }
 
 export const CreateSessionForm: React.FC<CreateSessionFormProps> = ({
@@ -20,18 +21,27 @@ export const CreateSessionForm: React.FC<CreateSessionFormProps> = ({
   const [selectedSemesters, setSelectedSemesters] = useState<number[]>([3, 5]);
   const [examsPerDay, setExamsPerDay] = useState<number>(1);
   const [startDate, setStartDate] = useState(new Date().toISOString().split('T')[0]);
+  const [endDate, setEndDate] = useState('');
   const [startTime, setStartTime] = useState('09:30');
   const [endTime, setEndTime] = useState('12:30');
   const [instructions, setInstructions] = useState('');
 
-  const allDepartments = [
-    { code: 'CSE', name: 'Computer Science & Engineering', color: '#8b5cf6' },
-    { code: 'ECE', name: 'Electronics & Communication', color: '#14b8a6' },
-    { code: 'ME',  name: 'Mechanical Engineering', color: '#f59e0b' },
-    { code: 'CV',  name: 'Civil Engineering', color: '#ec4899' },
-    { code: 'AIML', name: 'Artificial Intelligence & ML', color: '#3b82f6' },
-    { code: 'ISE', name: 'Information Science & Engineering', color: '#10b981' },
-  ];
+  const [allDepartments, setAllDepartments] = useState<any[]>([]);
+
+  useEffect(() => {
+    api.get('/auth/departments/')
+      .then(res => {
+        const depts = res.data.results || res.data;
+        // Assign some default colors for UI flavor if not provided by backend
+        const colors = ['#8b5cf6', '#14b8a6', '#f59e0b', '#ec4899', '#3b82f6', '#10b981'];
+        setAllDepartments(depts.map((d: any, i: number) => ({
+          ...d,
+          color: colors[i % colors.length]
+        })));
+        setSelectedDepts(depts.map((d: any) => d.code));
+      })
+      .catch(err => console.error('Failed to load departments', err));
+  }, []);
 
   const allSemesters = [1, 2, 3, 4, 5, 6, 7, 8];
 
@@ -55,6 +65,40 @@ export const CreateSessionForm: React.FC<CreateSessionFormProps> = ({
     backgroundColor: 'var(--color-bg-surface)',
     color: 'var(--color-text-primary)',
     fontSize: '0.875rem',
+  };
+
+  const [isSaving, setIsSaving] = useState(false);
+
+  const handleSave = async (allocate: boolean) => {
+    if (!sessionName || !startDate || !endDate || !startTime || !endTime) {
+      alert("Please fill required fields");
+      return;
+    }
+    
+    setIsSaving(true);
+    try {
+      const payload = {
+        name: sessionName,
+        session_type: examType === 'SEE_REGULAR' ? 'SEE' : (examType === 'SEE_SUPPLEMENTARY' ? 'SUPPLEMENTARY' : 'INTERNAL'),
+        academic_year: '2026-27',
+        start_date: startDate,
+        end_date: endDate,
+        status: 'DRAFT',
+      };
+      const res = await api.post('/scheduling/sessions/', payload);
+      const newSession = res.data;
+      
+      if (allocate && onSaveAndAllocate) {
+        onSaveAndAllocate(newSession.id);
+      } else {
+        onSave();
+      }
+    } catch (err: any) {
+      console.error(err);
+      alert('Failed to save session');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -157,7 +201,7 @@ export const CreateSessionForm: React.FC<CreateSessionFormProps> = ({
         </div>
 
         {/* Exams per day and date/timing */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '20px', marginBottom: '24px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '20px', marginBottom: '24px' }}>
           <div>
             <label style={{ display: 'block', marginBottom: '8px', fontSize: '0.875rem', fontWeight: 600 }}>
               Exams Per Day Limit
@@ -170,9 +214,16 @@ export const CreateSessionForm: React.FC<CreateSessionFormProps> = ({
 
           <div>
             <label style={{ display: 'block', marginBottom: '8px', fontSize: '0.875rem', fontWeight: 600 }}>
-              Exam Date
+              Start Date
             </label>
             <input type="date" style={inputStyle} value={startDate} onChange={e => setStartDate(e.target.value)} />
+          </div>
+
+          <div>
+            <label style={{ display: 'block', marginBottom: '8px', fontSize: '0.875rem', fontWeight: 600 }}>
+              End Date
+            </label>
+            <input type="date" style={inputStyle} value={endDate} onChange={e => setEndDate(e.target.value)} />
           </div>
 
           <div>
@@ -209,12 +260,13 @@ export const CreateSessionForm: React.FC<CreateSessionFormProps> = ({
         </Button>
 
         <div style={{ display: 'flex', gap: '12px' }}>
-          <Button variant="outline" onClick={onSave}>
-            Save Draft Session
+          <Button variant="outline" onClick={() => handleSave(false)} disabled={isSaving}>
+            {isSaving ? 'Saving...' : 'Save Draft Session'}
           </Button>
           <Button
             variant="primary"
-            onClick={onSaveAndAllocate || onSave}
+            onClick={() => handleSave(true)}
+            disabled={isSaving}
             style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
           >
             <Sparkles size={16} /> Save & Launch AI Allocator

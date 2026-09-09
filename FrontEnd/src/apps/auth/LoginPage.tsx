@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import api from "@/services/api";
 import { useAuthStore } from "@/store/authStore";
 import toast from "react-hot-toast";
+import { Eye, EyeOff } from "lucide-react";
 
 const ROLE_PATHS: Record<string, string> = {
   CHIEF_SUPERINTENDENT: "/coe",
@@ -21,6 +22,7 @@ export default function LoginPage() {
   const login = useAuthStore((s) => s.login);
   const [form, setForm] = useState({ email: "", password: "" });
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -30,40 +32,12 @@ export default function LoginPage() {
       login(data.user, data.access, data.refresh);
       toast.success(`Welcome, ${data.user.full_name}!`);
       navigate(ROLE_PATHS[data.user.role] ?? "/");
-    } catch {
-      // Fallback for scanning center and test accounts if backend is unreachable
-      const lowerEmail = form.email.toLowerCase();
-      if (lowerEmail.includes("scanning") || lowerEmail.includes("scanner")) {
-        login(
-          { id: "scan-1", email: form.email, full_name: "Scanning Center Superintendent", role: "SCANNING_OFFICER" },
-          "mock-access-token",
-          "mock-refresh-token"
-        );
-        toast.success("Welcome, Scanning Center Superintendent!");
-        navigate("/scanning");
-        return;
-      }
-      if (lowerEmail.includes("faculty") || lowerEmail.includes("teacher")) {
-        login(
-          { id: "fac-1", email: form.email, full_name: "Prof. Alan Turing", role: "FACULTY", department_code: "CSE" },
-          "mock-access-token",
-          "mock-refresh-token"
-        );
-        toast.success("Welcome, Prof. Alan Turing!");
-        navigate("/faculty");
-        return;
-      }
-      if (lowerEmail.includes("hod")) {
-        login(
-          { id: "hod-1", email: form.email, full_name: "Dr. Grace Hopper", role: "HOD", department_code: "CSE" },
-          "mock-access-token",
-          "mock-refresh-token"
-        );
-        toast.success("Welcome, Dr. Grace Hopper!");
-        navigate("/hod");
-        return;
-      }
-      toast.error("Invalid credentials. Please try again.");
+    } catch (err: any) {
+      const msg =
+        err?.response?.data?.detail ||
+        err?.response?.data?.non_field_errors?.[0] ||
+        (err?.message === 'Network Error' ? 'Cannot reach server. Is the backend running?' : 'Login failed. Please try again.');
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -252,33 +226,57 @@ export default function LoginPage() {
               <label style={{ display: "block", fontSize: "0.875rem", fontWeight: 600, color: "var(--color-text-primary)", marginBottom: "0.5rem" }}>
                 Password
               </label>
-              <input
-                id="login-password"
-                type="password"
-                required
-                value={form.password}
-                onChange={(e) => setForm({ ...form, password: e.target.value })}
-                placeholder="••••••••"
-                style={{
-                  width: "100%", 
-                  padding: "14px 16px",
-                  background: "var(--color-bg-card)",
-                  border: "1px solid var(--color-border)",
-                  borderRadius: "var(--radius-md)",
-                  color: "var(--color-text-primary)",
-                  fontSize: "1rem",
-                  outline: "none",
-                  transition: "all var(--transition-fast)",
-                }}
-                onFocus={(e) => {
-                  e.target.style.borderColor = 'var(--color-primary)';
-                  e.target.style.boxShadow = '0 0 0 3px var(--color-primary-light)';
-                }}
-                onBlur={(e) => {
-                  e.target.style.borderColor = 'var(--color-border)';
-                  e.target.style.boxShadow = 'none';
-                }}
-              />
+              <div style={{ position: "relative" }}>
+                <input
+                  id="login-password"
+                  type={showPassword ? "text" : "password"}
+                  required
+                  value={form.password}
+                  onChange={(e) => setForm({ ...form, password: e.target.value })}
+                  placeholder="••••••••"
+                  style={{
+                    width: "100%", 
+                    padding: "14px 16px",
+                    paddingRight: "45px",
+                    background: "var(--color-bg-card)",
+                    border: "1px solid var(--color-border)",
+                    borderRadius: "var(--radius-md)",
+                    color: "var(--color-text-primary)",
+                    fontSize: "1rem",
+                    outline: "none",
+                    transition: "all var(--transition-fast)",
+                    boxSizing: "border-box"
+                  }}
+                  onFocus={(e) => {
+                    e.target.style.borderColor = 'var(--color-primary)';
+                    e.target.style.boxShadow = '0 0 0 3px var(--color-primary-light)';
+                  }}
+                  onBlur={(e) => {
+                    e.target.style.borderColor = 'var(--color-border)';
+                    e.target.style.boxShadow = 'none';
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  style={{
+                    position: "absolute",
+                    right: "12px",
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    color: "var(--color-text-secondary)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    padding: "4px"
+                  }}
+                >
+                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
             </div>
             
             <button

@@ -26,6 +26,7 @@ import {
   Zap,
   Grid
 } from 'lucide-react';
+import { api } from '@/services/api';
 import { CreateDepartmentExamModal } from './components/CreateDepartmentExamModal';
 import { FacultyDutyChartModal } from './components/FacultyDutyChartModal';
 import { AISeatingEngineModal } from './components/AISeatingEngineModal';
@@ -38,6 +39,7 @@ interface Props {
   halls: ExamHall[];
   allocatedSeats: AllocatedSeat[];
   facultyDuties: FacultyDutyAllocation[];
+  students: any[]; // Or StudentEligibilityRecord[] if imported
   onUpdateSessions: (sessions: DepartmentExamSession[]) => void;
 }
 
@@ -48,6 +50,7 @@ export const DepartmentExamsTab: React.FC<Props> = ({
   halls,
   allocatedSeats,
   facultyDuties,
+  students,
   onUpdateSessions,
 }) => {
   const [filterType, setFilterType] = useState<string>('ALL');
@@ -55,6 +58,30 @@ export const DepartmentExamsTab: React.FC<Props> = ({
   const [isDutyChartOpen, setIsDutyChartOpen] = useState(false);
   const [isAISeatingOpen, setIsAISeatingOpen] = useState(false);
   const [selectedSessionForSeating, setSelectedSessionForSeating] = useState<DepartmentExamSession | null>(null);
+
+  const [generatingTaskId, setGeneratingTaskId] = useState<string | null>(null);
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  // Polling effect: only used if backend returns an async task_id (future Celery support)
+  React.useEffect(() => {
+    if (!generatingTaskId || generatingTaskId.startsWith('sync-')) return;
+    const interval = setInterval(() => {
+      api.get(`/scheduling/timetable/status/${generatingTaskId}/`)
+        .then(res => {
+          if (res.data.ready) {
+            if (res.data.status === 'SUCCESS' && res.data.result?.success) {
+              toast.success(`Timetable scheduled by AI solver in ${res.data.result.wall_time_secs}s!`);
+              setTimeout(() => window.location.reload(), 1500);
+            } else {
+              toast.error(res.data.result?.error || 'Solver failed to find a valid schedule.');
+            }
+            setGeneratingTaskId(null);
+          }
+        })
+        .catch(err => console.error(err));
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [generatingTaskId]);
 
   const filteredSessions = filterType === 'ALL'
     ? sessions
@@ -175,71 +202,7 @@ export const DepartmentExamsTab: React.FC<Props> = ({
         </div>
       </div>
 
-      {/* ── AI Multi-Semester Mixed Seating Engine Announcement Banner ── */}
-      <div style={{
-        background: 'linear-gradient(135deg, #1E1B4B 0%, #312E81 50%, #1E293B 100%)',
-        color: 'white',
-        borderRadius: '16px',
-        padding: '18px 24px',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        flexWrap: 'wrap',
-        gap: '16px',
-        boxShadow: '0 10px 25px -5px rgba(49, 46, 129, 0.3)',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-          <div style={{
-            width: 44,
-            height: 44,
-            borderRadius: '12px',
-            background: 'linear-gradient(135deg, #6366F1 0%, #4F46E5 100%)',
-            color: 'white',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            boxShadow: '0 4px 12px rgba(99,102,241,0.4)',
-          }}>
-            <Sparkles size={24} />
-          </div>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <h4 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 800 }}>
-                AI Multi-Semester Anti-Cheating Seating Engine
-              </h4>
-              <span style={{ background: '#10B981', color: 'white', padding: '2px 8px', borderRadius: '4px', fontSize: '0.68rem', fontWeight: 800 }}>
-                ACTIVE (160 CANDIDATES)
-              </span>
-            </div>
-            <p style={{ margin: '3px 0 0 0', fontSize: '0.78rem', color: '#C7D2FE' }}>
-              In a single exam hall, students from 3rd, 5th, and 7th semesters are interleaved in adjacent seats. Faculty invigilation duties are equalized at exactly 2 slots/faculty.
-            </p>
-          </div>
-        </div>
-
-        <button
-          onClick={() => {
-            setSelectedSessionForSeating(sessions[0] || null);
-            setIsAISeatingOpen(true);
-          }}
-          style={{
-            padding: '10px 20px',
-            borderRadius: '10px',
-            border: 'none',
-            background: 'linear-gradient(135deg, #6366F1 0%, #4F46E5 100%)',
-            color: 'white',
-            fontWeight: 800,
-            fontSize: '0.84rem',
-            cursor: 'pointer',
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '8px',
-            boxShadow: '0 4px 14px rgba(99,102,241,0.4)',
-          }}
-        >
-          <Grid size={16} /> Open Room Seating Grids & Notice Board
-        </button>
-      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '24px', marginBottom: '16px' }}></div>
 
       {/* ── Action Bar & Filters ── */}
       <div style={{
@@ -464,6 +427,7 @@ export const DepartmentExamsTab: React.FC<Props> = ({
 
                   {/* Status */}
                   <td style={{ padding: '14px 16px' }}>
+                    {session.status === 'DRAFT' && <Badge variant="warning">DRAFT (Awaiting Generation)</Badge>}
                     {session.status === 'SCHEDULED' && <Badge variant="neutral">SCHEDULED</Badge>}
                     {session.status === 'FACULTY_APPOINTED' && <Badge variant="info">FACULTY APPOINTED</Badge>}
                     {session.status === 'QP_APPROVED' && <Badge variant="success">QP VERIFIED ✓</Badge>}
@@ -473,30 +437,109 @@ export const DepartmentExamsTab: React.FC<Props> = ({
 
                   {/* Room Seating & Notice for THIS specific exam */}
                   <td style={{ padding: '14px 18px', textAlign: 'right' }}>
-                    <button
-                      onClick={() => {
-                        setSelectedSessionForSeating(session);
-                        setIsAISeatingOpen(true);
-                      }}
-                      title="Open Room Door Seating Grid & Notice Board for this scheduled exam"
-                      style={{
-                        padding: '6px 12px',
-                        borderRadius: '8px',
-                        border: '1.5px solid #4F46E5',
-                        background: '#EEF2FF',
-                        color: '#4F46E5',
-                        fontSize: '0.74rem',
-                        fontWeight: 800,
-                        cursor: 'pointer',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        whiteSpace: 'nowrap',
-                        boxShadow: '0 2px 4px rgba(79,70,229,0.12)',
-                      }}
-                    >
-                      <Grid size={13} /> Seating & Notice
-                    </button>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-end' }}>
+                      {session.status === 'DRAFT' ? (
+                        <button
+                          disabled={!!generatingTaskId || isGenerating}
+                          onClick={async () => {
+                            setIsGenerating(true);
+                            const loadingToast = toast.loading('Running AI Timetable Solver...');
+                            try {
+                              const res = await api.post('/scheduling/timetable/generate/', {
+                                exam_session_id: session.id,
+                                time_limit_secs: 60,
+                              });
+                              // Synchronous path: solver finished, result is already in the response
+                              if (res.data.sync && res.data.result?.success) {
+                                toast.success(
+                                  `Timetable generated in ${res.data.result.wall_time_secs}s — ${res.data.result.slots_created} slot(s) created!`,
+                                  { id: loadingToast, duration: 4000 }
+                                );
+                                setTimeout(() => window.location.reload(), 1500);
+                              } else {
+                                // Async path (future Celery): poll for completion
+                                toast.success('Solver started, waiting for result...', { id: loadingToast });
+                                setGeneratingTaskId(res.data.task_id);
+                              }
+                            } catch (err: any) {
+                              toast.error(
+                                err.response?.data?.error || 'Failed to run AI generator',
+                                { id: loadingToast }
+                              );
+                            } finally {
+                              setIsGenerating(false);
+                            }
+                          }}
+                          style={{
+                            padding: '8px 16px',
+                            borderRadius: '8px',
+                            border: 'none',
+                            background: (generatingTaskId || isGenerating) ? '#94A3B8' : 'linear-gradient(135deg, #10B981 0%, #059669 100%)',
+                            color: 'white',
+                            fontSize: '0.74rem',
+                            fontWeight: 800,
+                            cursor: (generatingTaskId || isGenerating) ? 'not-allowed' : 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            boxShadow: (generatingTaskId || isGenerating) ? 'none' : '0 2px 4px rgba(16,185,129,0.3)',
+                          }}
+                        >
+                          <Zap size={14} /> {isGenerating ? 'Solver Running...' : generatingTaskId ? 'Awaiting Result...' : 'Run AI Generator'}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            setSelectedSessionForSeating(session);
+                            setIsAISeatingOpen(true);
+                          }}
+                          title="Open Room Door Seating Grid & Notice Board for this scheduled exam"
+                          style={{
+                            padding: '6px 12px',
+                            borderRadius: '8px',
+                            border: '1.5px solid #4F46E5',
+                            background: '#EEF2FF',
+                            color: '#4F46E5',
+                            fontSize: '0.74rem',
+                            fontWeight: 800,
+                            cursor: 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            whiteSpace: 'nowrap',
+                            boxShadow: '0 2px 4px rgba(79,70,229,0.12)',
+                          }}
+                        >
+                          <Grid size={13} /> Seating & Notice
+                        </button>
+                      )}
+                      
+                      <button
+                        onClick={async () => {
+                          if (!window.confirm('Are you sure you want to delete this session?')) return;
+                          try {
+                            await api.delete(`/scheduling/sessions/${session.id}/`);
+                            toast.success('Session deleted successfully');
+                            onUpdateSessions(sessions.filter(s => s.id !== session.id));
+                          } catch (err: any) {
+                            toast.error('Failed to delete session');
+                          }
+                        }}
+                        style={{
+                          background: 'transparent',
+                          color: '#EF4444',
+                          border: 'none',
+                          padding: '4px 8px',
+                          borderRadius: '4px',
+                          fontSize: '0.75rem',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          textDecoration: 'underline'
+                        }}
+                      >
+                        Delete Session
+                      </button>
+                    </div>
                   </td>
 
                 </tr>
@@ -531,6 +574,7 @@ export const DepartmentExamsTab: React.FC<Props> = ({
           facultyMembers={facultyMembers}
           allocatedSeats={allocatedSeats}
           facultyDuties={facultyDuties}
+          students={students}
           targetSession={selectedSessionForSeating}
           sessions={sessions}
           onClose={() => {

@@ -26,12 +26,40 @@ def create_users():
         if not User.objects.filter(email=u["email"]).exists():
             is_super = u.pop("is_superuser", False)
             if is_super:
-                User.objects.create_superuser(**u)
+                user_obj = User.objects.create_superuser(**u)
             else:
-                User.objects.create_user(**u)
+                user_obj = User.objects.create_user(**u)
             print(f"Created {u['role']} user: {u['email']} / password123")
         else:
             print(f"User {u['email']} already exists.")
+
+    # Create Student
+    from users.models import Department, Student
+    dept, _ = Department.objects.get_or_create(code="CS", defaults={"name": "Computer Science"})
+    
+    student_user, created = User.objects.get_or_create(
+        email="student@nexai.com",
+        defaults={
+            "full_name": "Test Student",
+            "role": UserRole.STUDENT,
+        }
+    )
+    if created:
+        student_user.set_password("password123")
+        student_user.save()
+        print(f"Created STUDENT user: student@nexai.com / password123")
+    
+    student_profile, created = Student.objects.get_or_create(
+        user=student_user,
+        defaults={
+            "department": dept,
+            "usn": "1XX21CS001",
+            "current_semester": 5,
+            "batch_year": 2024
+        }
+    )
+    if created:
+        print(f"Created Student profile: {student_profile.usn}")
 
 if __name__ == "__main__":
     create_users()

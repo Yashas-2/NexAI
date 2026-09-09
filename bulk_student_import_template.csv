@@ -1,0 +1,5 @@
+name,usn,email,password,department,semester,section
+John Doe,1RV20CS001,john.doe@example.com,Pass123!,Computer Science and Engineering,1,A
+Jane Smith,1RV20CS002,jane.smith@example.com,Pass123!,Computer Science and Engineering,1,A
+Rahul Kumar,1RV20CS003,rahul.k@example.com,Pass123!,Computer Science and Engineering,1,A
+Priya Sharma,1RV20CS004,priya.s@example.com,Pass123!,Computer Science and Engineering,1,B

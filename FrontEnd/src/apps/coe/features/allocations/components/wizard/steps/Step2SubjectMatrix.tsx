@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { BookOpen, Users, Search, ArrowRight, ArrowLeft, ShieldAlert, CheckCircle2 } from 'lucide-react';
 import { SubjectExam, SessionScopeConfig } from '../../../types/allocationTypes';
-import { MOCK_ALL_SUBJECTS } from '../../../mock/allocationMockData';
 
 interface Step2SubjectMatrixProps {
   scopeConfig: SessionScopeConfig;
+  availableSubjects: SubjectExam[];
   selectedSubjects: SubjectExam[];
   onSubjectsChange: (subjects: SubjectExam[]) => void;
   onNext: () => void;
@@ -13,6 +13,7 @@ interface Step2SubjectMatrixProps {
 
 export const Step2SubjectMatrix: React.FC<Step2SubjectMatrixProps> = ({
   scopeConfig,
+  availableSubjects,
   selectedSubjects,
   onSubjectsChange,
   onNext,
@@ -20,16 +21,18 @@ export const Step2SubjectMatrix: React.FC<Step2SubjectMatrixProps> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Filter pool by the departments and semesters selected in Step 1
-  const eligiblePool = MOCK_ALL_SUBJECTS.filter(s =>
-    scopeConfig.selectedDepartments.includes(s.deptCode) &&
-    scopeConfig.selectedSemesters.includes(s.semester)
+  // Filter: subjects matching selected departments AND semesters
+  const eligiblePool = availableSubjects.filter(s =>
+    (scopeConfig.selectedDepartments.length === 0 || scopeConfig.selectedDepartments.includes(s.deptCode)) &&
+    (scopeConfig.selectedSemesters.length === 0 || scopeConfig.selectedSemesters.includes(s.semester))
   );
 
-  // If filtered pool is empty (e.g. user selected sem 8 and no sem 8 data), fall back to all subjects matching dept
+  // Always show all subjects for selected depts if no semester filtered, or fall back gracefully
   const displayPool = eligiblePool.length > 0
     ? eligiblePool
-    : MOCK_ALL_SUBJECTS.filter(s => scopeConfig.selectedDepartments.includes(s.deptCode));
+    : availableSubjects.filter(s =>
+        scopeConfig.selectedDepartments.length === 0 || scopeConfig.selectedDepartments.includes(s.deptCode)
+      );
 
   const filteredSubjects = displayPool.filter(s =>
     s.code.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -60,6 +63,32 @@ export const Step2SubjectMatrix: React.FC<Step2SubjectMatrixProps> = ({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+
+      {/* ── Guidance Panel ── */}
+      <div style={{
+        background: 'linear-gradient(135deg, #F0FDF4 0%, #ECFDF5 100%)',
+        border: '1.5px solid #BBF7D0',
+        borderRadius: '14px',
+        padding: '18px 22px',
+        display: 'flex',
+        gap: '16px',
+        alignItems: 'flex-start',
+      }}>
+        <div style={{ fontSize: '1.6rem', flexShrink: 0 }}>📚</div>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: '0.9rem', color: '#065F46', marginBottom: '6px' }}>
+            Step 2 of 5 — Select subjects for this exam session
+          </div>
+          <ul style={{ margin: 0, paddingLeft: '18px', color: '#047857', fontSize: '0.82rem', lineHeight: 1.7 }}>
+            <li>Only subjects <strong>matching your selected departments & semesters</strong> appear here</li>
+            <li>Click a subject card to <strong>include it in this SEE session</strong> (highlighted = selected)</li>
+            <li>Each card shows the <strong>eligible candidate count</strong> — only students cleared by attendance, CIE & fee clearance</li>
+            <li>Select subjects from <strong>at least 2 departments</strong> to enable cross-department anti-cheating interleaving</li>
+            <li>Use <strong>"Select All Available"</strong> to include all eligible subjects at once</li>
+          </ul>
+        </div>
+      </div>
+
       {/* Banner */}
       <div style={{
         background: 'linear-gradient(135deg, #0D9488 0%, #115E59 100%)',
@@ -82,7 +111,7 @@ export const Step2SubjectMatrix: React.FC<Step2SubjectMatrixProps> = ({
             <span style={{ fontSize: '0.72rem', letterSpacing: '1px', textTransform: 'uppercase', opacity: 0.8, fontWeight: 700 }}>
               Step 2 of 5 • Cross-Department Course Matrix
             </span>
-            <h2 style={{ margin: 0, fontSize: '1.4rem', fontWeight: 800 }}>Subject Selection & Candidate Tallies</h2>
+            <h2 style={{ margin: 0, fontSize: '1.4rem', fontWeight: 800 }}>Subject Selection & Eligible Candidate Tallies</h2>
           </div>
         </div>
 
@@ -94,7 +123,7 @@ export const Step2SubjectMatrix: React.FC<Step2SubjectMatrixProps> = ({
           textAlign: 'right',
           border: '1px solid rgba(255,255,255,0.3)',
         }}>
-          <div style={{ fontSize: '0.75rem', opacity: 0.85, textTransform: 'uppercase', fontWeight: 600 }}>Total Exam Candidates</div>
+          <div style={{ fontSize: '0.75rem', opacity: 0.85, textTransform: 'uppercase', fontWeight: 600 }}>Total Eligible Candidates</div>
           <div style={{ fontSize: '1.5rem', fontWeight: 900 }}>{totalCandidates} <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>Students</span></div>
         </div>
       </div>
@@ -192,7 +221,23 @@ export const Step2SubjectMatrix: React.FC<Step2SubjectMatrixProps> = ({
         gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
         gap: '14px',
       }}>
-        {filteredSubjects.map(sub => {
+        {filteredSubjects.length === 0 ? (
+          <div style={{
+            gridColumn: '1 / -1',
+            padding: '40px',
+            textAlign: 'center',
+            background: '#F8FAFC',
+            borderRadius: '12px',
+            border: '1.5px dashed #CBD5E1',
+          }}>
+            <p style={{ fontWeight: 700, color: '#64748B', margin: '0 0 8px 0' }}>No subjects found</p>
+            <p style={{ fontSize: '0.82rem', color: '#94A3B8', margin: 0 }}>
+              {availableSubjects.length === 0
+                ? 'Subjects are loading or none exist in the database yet.'
+                : 'No subjects match the selected departments and semesters. Go back and adjust your scope.'}
+            </p>
+          </div>
+        ) : filteredSubjects.map(sub => {
           const isSelected = selectedSubjects.some(s => s.code === sub.code);
           return (
             <div
@@ -255,7 +300,7 @@ export const Step2SubjectMatrix: React.FC<Step2SubjectMatrixProps> = ({
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: sub.color }}>
                   <Users size={15} />
                   <span style={{ fontSize: '0.82rem', fontWeight: 800 }}>{sub.eligibleStudents}</span>
-                  <span style={{ fontSize: '0.75rem', color: '#64748B' }}>enrolled candidates</span>
+                  <span style={{ fontSize: '0.75rem', color: '#16a34a', fontWeight: 700 }}>eligible candidates</span>
                 </div>
                 <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#475569' }}>SEE Written</span>
               </div>

@@ -28,14 +28,27 @@ docker-compose up -d
 
 # Backend
 cd BackEnd
+
+# Create a virtual environment (Note: Python 3.11 is required)
+py -3.11 -m venv venv
+
+# Activate the virtual environment (PowerShell)
+.\venv\Scripts\Activate.ps1
+
+# Install dependencies
 pip install -r requirements.txt
+
+# Setup Database
+python manage.py makemigrations
 python manage.py migrate
+
+# Start Server
 python manage.py runserver
 
 # Frontend
 cd FrontEnd
-npm install
-npm run dev
+pnpm install
+pnpm run dev
 
 # Mobile (Flutter)
 cd Apps

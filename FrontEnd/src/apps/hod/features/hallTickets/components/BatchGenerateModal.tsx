@@ -1,75 +1,102 @@
 import React, { useState } from 'react';
-import { StudentEligibilityRecord, HallTicketRecord, ExamCycleType } from '../../../types';
+import { StudentEligibilityRecord, HallTicketRecord, ExamCycleType, TimetableSlot } from '../../../types';
 import { X, QrCode, Cpu, ShieldCheck } from 'lucide-react';
+import { api } from '@/services/api';
+import toast from 'react-hot-toast';
 
 interface BatchGenerateModalProps {
   students: StudentEligibilityRecord[];
+  sessions?: {id: string, name: string}[];
   onBatchGenerateSuccess: (newTickets: HallTicketRecord[]) => void;
   onClose: () => void;
 }
 
 export const BatchGenerateModal: React.FC<BatchGenerateModalProps> = ({
   students,
+  sessions = [],
   onBatchGenerateSuccess,
   onClose,
 }) => {
   const [targetSemester, setTargetSemester] = useState<string>('ALL');
-  const [targetExamCycle, setTargetExamCycle] = useState<ExamCycleType>('CIE-1');
+  const [targetExamCycle] = useState<ExamCycleType>('SEE_FINAL');
+  const [selectedSessionId, setSelectedSessionId] = useState<string>('NONE');
   const [isGenerating, setIsGenerating] = useState(false);
 
-  const eligibleCandidates = students.filter(s => {
-    // 1. Basic attendance clearance & fee clearance
-    const hasAttendanceClearance = s.status === 'ELIGIBLE' || (s.status === 'CONDONABLE' && s.condonationApproved);
-    if (!hasAttendanceClearance) return false;
-    if (s.status === 'FEE_BLOCKED') return false;
+  // Group student eligibility records by USN and evaluate subject-by-subject eligibility
+  const studentMap = new Map<string, { usn: string; name: string; semester: string; subjects: StudentEligibilityRecord[] }>();
 
-    // 2. Semester filter
-    if (targetSemester !== 'ALL' && s.semester !== targetSemester) return false;
-
-    // 3. For SEE Final Examination: Requires minimum passing CIE average of 20/50 (40%)
-    if (targetExamCycle === 'SEE_FINAL') {
-      if (s.cieMarksAvg < 20) return false;
+  students.forEach(s => {
+    if (targetSemester !== 'ALL') {
+      const studentSemDigit = (s.semester || '').match(/\d+/)?.[0];
+      const targetSemDigit = targetSemester.match(/\d+/)?.[0];
+      if (studentSemDigit && targetSemDigit && studentSemDigit !== targetSemDigit) return;
     }
 
-    return true;
+    const key = s.usn.toLowerCase().trim();
+    const existing = studentMap.get(key) || { usn: s.usn, name: s.name, semester: s.semester, subjects: [] };
+    existing.subjects.push(s);
+    studentMap.set(key, existing);
   });
 
-  const handleGenerateBatch = () => {
+  interface CandidateTicketPlan {
+    usn: string;
+    name: string;
+    semester: string;
+    eligibleSubjects: StudentEligibilityRecord[];
+    totalSubjectsCount: number;
+    barredSubjectsCount: number;
+  }
+
+  const qualifiedCandidates: CandidateTicketPlan[] = [];
+
+  studentMap.forEach(st => {
+    const clearedSubs = st.subjects.filter(sub => {
+      const isAttCleared = sub.status === 'ELIGIBLE' || (sub.status === 'CONDONABLE' && sub.condonationApproved);
+      if (!isAttCleared) return false;
+      if (sub.status === 'FEE_BLOCKED' || sub.hasFeeDues) return false;
+      if ((sub.cieMarksAvg ?? 0) < 20) return false;
+      return true;
+    });
+
+    const barredCount = st.subjects.length - clearedSubs.length;
+
+    // Student receives a Hall Ticket IF they are eligible for AT LEAST 1 subject
+    if (clearedSubs.length > 0) {
+      qualifiedCandidates.push({
+        usn: st.usn,
+        name: st.name,
+        semester: st.semester,
+        eligibleSubjects: clearedSubs,
+        totalSubjectsCount: st.subjects.length,
+        barredSubjectsCount: barredCount
+      });
+    }
+  });
+
+  const handleGenerateBatch = async () => {
+    if (selectedSessionId === 'NONE') {
+      toast.error('Please select an Exam Session before generating tickets');
+      return;
+    }
+    
     setIsGenerating(true);
-
-    setTimeout(() => {
-      const generated: HallTicketRecord[] = eligibleCandidates.map((s, idx) => ({
-        id: `ht_${Date.now()}_${idx}`,
-        ticketNumber: `HT-${targetExamCycle}-FALL26-CS-${s.usn.slice(-3)}`,
-        usn: s.usn,
-        studentName: s.name,
-        semester: `${s.semester} B.Tech`,
-        department: 'Department of Computer Science & Engineering',
-        examSession: targetExamCycle === 'SEE_FINAL'
-          ? 'Fall Semester End Examination (SEE) 2026'
-          : `Fall 2026 Continuous Internal Evaluation (${targetExamCycle})`,
-        examCycle: targetExamCycle,
-        generatedAt: new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }) + ' IST',
-        isRevoked: false,
-        qrPayload: `NEXAI_ADMIT_${targetExamCycle}_VERIFIED_${s.usn}_SIGN_HOD_CSE_OK`,
-        slots: s.subjectCode ? [
-          {
-            subjectCode: s.subjectCode,
-            subjectTitle: s.subjectTitle || 'Course',
-            examDate: targetExamCycle === 'CIE-1' ? 'Oct 15, 2026' : targetExamCycle === 'CIE-2' ? 'Nov 12, 2026' : 'Dec 08, 2026',
-            examTime: '10:00 AM - 01:00 PM',
-            roomAllocated: 'Hall A-101',
-            deskNumber: `D-${idx + 1}`
-          }
-        ] : [
-          { subjectCode: 'CS201', subjectTitle: 'Data Structures & Algorithms', examDate: 'Oct 15, 2026', examTime: '10:00 AM - 01:00 PM', roomAllocated: 'Hall A-101', deskNumber: `D-${idx + 1}` },
-        ],
-      }));
-
-      onBatchGenerateSuccess(generated);
-      setIsGenerating(false);
+    
+    try {
+      const response = await api.post(`/eligibility/generate-hall-tickets/${selectedSessionId}/`);
+      
+      // Assume the backend triggers the task and we fetch updated tickets in the parent tab.
+      toast.success(response.data.message || 'Hall ticket generation task queued.');
+      
+      // Since it's async queued or we need the actual tickets, we could either:
+      // A: Wait for a webhook/poll
+      // B: Just close and let the parent re-fetch
+      onBatchGenerateSuccess([]); // We'll rely on the parent to re-fetch via useEffect if needed, but for now we pass empty as the task is async
       onClose();
-    }, 1400);
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || 'Failed to generate hall tickets.');
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   return (
@@ -155,77 +182,94 @@ export const BatchGenerateModal: React.FC<BatchGenerateModalProps> = ({
         {/* Body */}
         <div style={{ padding: '26px 30px', display: 'flex', flexDirection: 'column', gap: '18px' }}>
           
-          {/* Target Examination / CIE Series Selection */}
+          {/* Target Examination Selection */}
           <div>
             <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, color: 'var(--color-text-primary)', marginBottom: '8px' }}>
-              Select Examination / CIE Series for Hall Ticket Issuance:
+              Target Examination Series:
             </label>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
-              {(['CIE-1', 'CIE-2', 'SEE_FINAL'] as const).map(cycle => (
-                <button
-                  key={cycle}
-                  type="button"
-                  onClick={() => setTargetExamCycle(cycle)}
-                  style={{
-                    padding: '10px 12px',
-                    borderRadius: '10px',
-                    border: targetExamCycle === cycle ? '2px solid #4F46E5' : '1.5px solid #E2E8F0',
-                    background: targetExamCycle === cycle ? '#EEF2FF' : '#F8FAFC',
-                    color: targetExamCycle === cycle ? '#4338CA' : '#475569',
-                    fontWeight: 800,
-                    fontSize: '0.82rem',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    gap: '2px',
-                    transition: 'all 0.15s ease',
-                  }}
-                >
-                  <span>{cycle === 'SEE_FINAL' ? 'SEE Final' : cycle}</span>
-                  <span style={{ fontSize: '0.68rem', fontWeight: 600, color: targetExamCycle === cycle ? '#6366F1' : '#94A3B8' }}>
-                    {cycle === 'SEE_FINAL' ? 'Semester End Final' : cycle === 'CIE-1' ? 'Internal Test 1' : 'Internal Test 2'}
-                  </span>
-                </button>
-              ))}
+            <div style={{
+              padding: '14px 18px',
+              borderRadius: '12px',
+              border: '2px solid #4F46E5',
+              background: '#EEF2FF',
+              color: '#4338CA',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+            }}>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: '0.92rem' }}>
+                  Semester End Examination (SEE Final)
+                </div>
+                <div style={{ fontSize: '0.74rem', color: '#6366F1', marginTop: '2px' }}>
+                  Admit Cards / Hall Tickets are generated exclusively for Semester End Final Examinations. Internal Tests (CIE-1 & CIE-2) do not issue Hall Tickets.
+                </div>
+              </div>
+              <span style={{
+                background: '#4F46E5',
+                color: 'white',
+                fontSize: '0.7rem',
+                fontWeight: 800,
+                padding: '4px 10px',
+                borderRadius: '6px',
+                whiteSpace: 'nowrap'
+              }}>
+                SEE FINAL
+              </span>
             </div>
           </div>
 
-          {/* Gateway Eligibility Rule for Selected CIE */}
+          {/* Gateway Eligibility Rule for SEE Final */}
           <div style={{
-            background: targetExamCycle === 'SEE_FINAL' ? '#F0FDF4' : '#FFFBEB',
-            border: `1.5px solid ${targetExamCycle === 'SEE_FINAL' ? '#BBF7D0' : '#FDE68A'}`,
+            background: '#F0FDF4',
+            border: '1.5px solid #BBF7D0',
             borderRadius: '10px',
             padding: '10px 14px',
             fontSize: '0.75rem',
-            color: targetExamCycle === 'SEE_FINAL' ? '#14532D' : '#92400E',
+            color: '#14532D',
             display: 'flex',
             alignItems: 'center',
             gap: '8px'
           }}>
-            <ShieldCheck size={18} flex-shrink="0" />
+            <ShieldCheck size={18} />
             <span>
-              <strong>Gate Rule for {targetExamCycle === 'SEE_FINAL' ? 'SEE Final Examination' : targetExamCycle}:</strong>{' '}
-              {targetExamCycle === 'SEE_FINAL'
-                ? 'Requires minimum 75% Attendance AND minimum 20/50 (40%) Cumulative CIE Average.'
-                : 'Requires minimum 75% Attendance (or approved condonation waiver) and cleared fee dues.'}
+              <strong>Gate Rule for SEE Final Examination:</strong>{' '}
+              Requires minimum 75% Attendance (or approved condonation waiver), cleared fee dues, AND minimum 20/50 (40%) CIE Score.
             </span>
           </div>
 
-          <div>
-            <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, color: 'var(--color-text-primary)', marginBottom: '6px' }}>
-              Select Target Semester Cohort:
-            </label>
-            <select
-              value={targetSemester}
-              onChange={e => setTargetSemester(e.target.value)}
-              style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1.5px solid var(--color-border)', fontSize: '0.85rem', fontWeight: 600 }}
-            >
-              <option value="ALL">All Eligible Semesters (3rd, 5th, 7th)</option>
-              <option value="3rd Sem">3rd Semester B.Tech</option>
-              <option value="5th Sem">5th Semester B.Tech</option>
-              <option value="7th Sem">7th Semester B.Tech</option>
-            </select>
+          {/* Scope Configuration */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, color: 'var(--color-text-primary)', marginBottom: '6px' }}>
+                Select Target Exam Session:
+              </label>
+              <select
+                value={selectedSessionId}
+                onChange={(e) => setSelectedSessionId(e.target.value)}
+                style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1.5px solid var(--color-border)', fontSize: '0.85rem', fontWeight: 600 }}
+              >
+                <option value="NONE">-- Select Exam Session --</option>
+                {sessions.map(s => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, color: 'var(--color-text-primary)', marginBottom: '6px' }}>
+                Select Target Semester Cohort:
+              </label>
+              <select
+                value={targetSemester}
+                onChange={e => setTargetSemester(e.target.value)}
+                style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1.5px solid var(--color-border)', fontSize: '0.85rem', fontWeight: 600 }}
+              >
+                <option value="ALL">All Eligible Semesters (3rd, 5th, 7th)</option>
+                <option value="3rd Sem">3rd Semester B.Tech</option>
+                <option value="5th Sem">5th Semester B.Tech</option>
+                <option value="7th Sem">7th Semester B.Tech</option>
+              </select>
+            </div>
           </div>
 
           {/* Telemetry Summary */}
@@ -233,12 +277,12 @@ export const BatchGenerateModal: React.FC<BatchGenerateModalProps> = ({
             <div>
               <span style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)', textTransform: 'uppercase', fontWeight: 600 }}>Eligible Candidates Found</span>
               <div style={{ fontSize: '1.15rem', fontWeight: 800, color: '#16a34a' }}>
-                {eligibleCandidates.length} Students Qualified
+                {qualifiedCandidates.length} Students Qualified
               </div>
             </div>
 
             <span style={{ fontSize: '0.72rem', background: '#ecfdf5', color: '#059669', padding: '4px 10px', borderRadius: '12px', fontWeight: 700 }}>
-              Attendance & Fee Cleared ✓
+              Subject-Level Clearance Active ✓
             </span>
           </div>
 
@@ -251,22 +295,21 @@ export const BatchGenerateModal: React.FC<BatchGenerateModalProps> = ({
             overflowY: 'auto'
           }}>
             <div style={{ background: '#f8fafc', padding: '8px 12px', fontSize: '0.72rem', fontWeight: 800, color: '#475569', borderBottom: '1px solid #e2e8f0' }}>
-              GATEWAY QUALIFIED CANDIDATES ROSTER ({eligibleCandidates.length})
+              GATEWAY QUALIFIED CANDIDATES ROSTER ({qualifiedCandidates.length})
             </div>
-            {eligibleCandidates.length === 0 ? (
+            {qualifiedCandidates.length === 0 ? (
               <div style={{ padding: '16px', textAlign: 'center', color: '#94a3b8', fontSize: '0.75rem' }}>
                 No students qualify under the current semester criteria.
               </div>
             ) : (
-              eligibleCandidates.map(c => (
-                <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', borderBottom: '1px solid #f1f5f9', fontSize: '0.75rem' }}>
+              qualifiedCandidates.map(c => (
+                <div key={c.usn} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', borderBottom: '1px solid #f1f5f9', fontSize: '0.75rem' }}>
                   <div>
                     <strong style={{ fontFamily: 'monospace', color: '#1E293B' }}>{c.usn}</strong> - {c.name} ({c.semester})
                   </div>
                   <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                    <span style={{ color: '#16A34A', fontWeight: 700 }}>{c.attendancePercent}% Att.</span>
-                    <span style={{ background: '#DCFCE7', color: '#15803D', padding: '1px 6px', borderRadius: '4px', fontSize: '0.68rem', fontWeight: 800 }}>
-                      {c.condonationApproved ? 'CONDONED ✓' : 'CLEARED ✓'}
+                    <span style={{ background: '#DCFCE7', color: '#15803D', padding: '1px 8px', borderRadius: '4px', fontSize: '0.68rem', fontWeight: 800 }}>
+                      Cleared {c.eligibleSubjects.length} {c.barredSubjectsCount > 0 ? `(${c.barredSubjectsCount} Barred)` : 'Courses'}
                     </span>
                   </div>
                 </div>
@@ -290,23 +333,23 @@ export const BatchGenerateModal: React.FC<BatchGenerateModalProps> = ({
 
           <button
             onClick={handleGenerateBatch}
-            disabled={isGenerating || eligibleCandidates.length === 0}
+            disabled={isGenerating || qualifiedCandidates.length === 0}
             style={{
               padding: '10px 24px',
-              background: eligibleCandidates.length > 0 ? 'linear-gradient(135deg, #48977f 0%, #2f6852 100%)' : '#cbd5e1',
+              background: qualifiedCandidates.length > 0 ? 'linear-gradient(135deg, #48977f 0%, #2f6852 100%)' : '#cbd5e1',
               color: 'white',
               border: 'none',
               borderRadius: '8px',
               fontWeight: 800,
               fontSize: '0.85rem',
-              cursor: eligibleCandidates.length > 0 ? (isGenerating ? 'wait' : 'pointer') : 'not-allowed',
+              cursor: qualifiedCandidates.length > 0 ? (isGenerating ? 'wait' : 'pointer') : 'not-allowed',
               display: 'flex',
               alignItems: 'center',
               gap: '6px',
-              boxShadow: eligibleCandidates.length > 0 ? '0 4px 14px rgba(72,151,127,0.35)' : 'none',
+              boxShadow: qualifiedCandidates.length > 0 ? '0 4px 14px rgba(72,151,127,0.35)' : 'none',
             }}
           >
-            {isGenerating ? <><Cpu size={16} className="animate-spin" /> Signing & Generating Admit Cards...</> : <><QrCode size={16} /> Batch Issue {eligibleCandidates.length} Hall Tickets</>}
+            {isGenerating ? <><Cpu size={16} className="animate-spin" /> Signing & Generating Admit Cards...</> : <><QrCode size={16} /> Batch Issue {qualifiedCandidates.length} Hall Tickets</>}
           </button>
         </div>
       </div>

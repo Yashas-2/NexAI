@@ -31,6 +31,19 @@ class AnswerScriptSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'evaluation_code', 'question_paper', 'subject_code', 'scanning_session',
             'status', 'page_count', 'upload_complete', 'ai_total_score', 'evaluator_total_score',
-            'max_marks', 'pages', 'question_grades', 'assigned_evaluator'
+            'max_marks', 'pages', 'question_grades', 'assigned_evaluator', 'evaluation_bundle'
         ]
-        read_only_fields = ['status', 'ai_total_score', 'evaluator_total_score', 'upload_complete', 'assigned_evaluator']
+        read_only_fields = ['status', 'ai_total_score', 'evaluator_total_score', 'upload_complete', 'assigned_evaluator', 'evaluation_bundle']
+
+from .models import EvaluationBundle
+
+class EvaluationBundleSerializer(serializers.ModelSerializer):
+    evaluator_name = serializers.CharField(source='evaluator.full_name', read_only=True)
+    subject_code = serializers.CharField(source='subject.code', read_only=True)
+    
+    class Meta:
+        model = EvaluationBundle
+        fields = [
+            'id', 'name', 'evaluator', 'evaluator_name', 'subject', 'subject_code',
+            'exam_session', 'created_at', 'status'
+        ]

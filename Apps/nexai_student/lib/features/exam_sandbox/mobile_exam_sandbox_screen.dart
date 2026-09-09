@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../core/theme/app_theme.dart';
 import '../../models/student_models.dart';
-import '../../mock_data.dart';
 import 'widgets/digital_paper_canvas.dart';
 import 'widgets/full_question_paper_modal.dart';
 
@@ -29,7 +28,9 @@ class _MobileExamSandboxScreenState extends State<MobileExamSandboxScreen> {
   @override
   void initState() {
     super.initState();
-    _questions = mockSandboxQuestions;
+    _questions = [
+      ExamQuestionItem(questionNumber: 1, questionText: 'Exam questions will be loaded from the server.', maxMarks: 5, type: 'THEORY'),
+    ];
     _updateAnswerController();
   }
 
@@ -181,7 +182,7 @@ class _MobileExamSandboxScreenState extends State<MobileExamSandboxScreen> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('CS201: Data Structures Final Exam', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800)),
+            const Text('Exam Sandbox', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800)),
             Row(
               children: [
                 Container(width: 8, height: 8, decoration: const BoxDecoration(color: Color(0xFF4ADE80), shape: BoxShape.circle)),

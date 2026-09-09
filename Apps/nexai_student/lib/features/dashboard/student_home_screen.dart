@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../core/theme/app_theme.dart';
-import '../../mock_data.dart';
+import '../../services/api_service.dart';
+import '../auth/login_screen.dart';
 import '../admit_card/admit_card_screen.dart';
 import '../courses/courses_attendance_cie_screen.dart';
 import '../live_exam/live_exam_portal_tab.dart';
@@ -169,14 +170,87 @@ class _NavDestinationItem {
   });
 }
 
-class _StudentDashboardTab extends StatelessWidget {
+class _StudentDashboardTab extends StatefulWidget {
   const _StudentDashboardTab();
 
   @override
+  State<_StudentDashboardTab> createState() => _StudentDashboardTabState();
+}
+
+class _StudentDashboardTabState extends State<_StudentDashboardTab> {
+  Map<String, dynamic>? studentProfile;
+  List<dynamic> _hallTickets = [];
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchData();
+  }
+
+  Future<void> _fetchData() async {
+    try {
+      final profileData = await ApiService.get('/student/portal/my_profile/');
+      final ticketsData = await ApiService.get('/student/portal/my_hall_tickets/');
+      if (mounted) {
+        setState(() {
+          studentProfile = profileData;
+          _hallTickets = ticketsData is List ? ticketsData : [];
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        final errStr = e.toString();
+        // Token totally expired and refresh failed → go back to login
+        if (errStr.contains('401') || errStr.contains('token_not_valid') || errStr.contains('Token is invalid')) {
+          await ApiService.logout();
+          Navigator.pushAndRemoveUntil(
+            context,
+            MaterialPageRoute(builder: (_) => const LoginScreen()),
+            (_) => false,
+          );
+          return;
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to load data: $e'), backgroundColor: Colors.red),
+        );
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final student = mockStudentProfile;
-    final exams = mockExamSchedule;
-    final nextExam = exams.first;
+    if (_isLoading) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    final student = studentProfile ?? {};
+    final fullName = student['name'] ?? 'Student';
+    final usn = student['usn'] ?? '';
+    final semester = 'Semester ${student['semester'] ?? ''}';
+    final program = 'B.Tech - ${student['department'] ?? ''}';
+    final initials = fullName.split(' ').map((e) => e.isNotEmpty ? e[0] : '').take(2).join('').toUpperCase();
+    
+    // Build exam list from real hall tickets
+    final List<Map<String, dynamic>> exams = [];
+    for (final ticket in _hallTickets) {
+      final schedule = ticket['schedule'] ?? ticket['slots'] ?? [];
+      for (final slot in schedule) {
+        exams.add({
+          'subject_code': slot['subject_code'] ?? '',
+          'subject_name': slot['subject_name'] ?? slot['subject_title'] ?? '',
+          'exam_date': slot['exam_date'] ?? slot['date'] ?? '',
+          'exam_time': slot['exam_time'] ?? '${slot['start_time'] ?? ''} - ${slot['end_time'] ?? ''}',
+          'room': slot['room'] ?? slot['room_number'] ?? '',
+          'seat': slot['seat'] ?? slot['desk_number'] ?? '',
+          'question_paper_id': slot['question_paper_id'],
+        });
+      }
+    }
 
     return Scaffold(
       backgroundColor: AppTheme.bgBase,
@@ -199,6 +273,18 @@ class _StudentDashboardTab extends StatelessWidget {
               );
             },
             icon: const Icon(Icons.notifications_none_rounded),
+          ),
+          IconButton(
+            onPressed: () async {
+              await ApiService.logout();
+              if (mounted) {
+                Navigator.pushReplacement(
+                  context,
+                  MaterialPageRoute(builder: (_) => const LoginScreen()),
+                );
+              }
+            },
+            icon: const Icon(Icons.logout, color: Colors.redAccent),
           ),
         ],
       ),
@@ -227,7 +313,7 @@ class _StudentDashboardTab extends StatelessWidget {
                     radius: 28,
                     backgroundColor: AppTheme.primary,
                     child: Text(
-                      student.avatarInitials,
+                      initials,
                       style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 18),
                     ),
                   ),
@@ -237,15 +323,15 @@ class _StudentDashboardTab extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          student.fullName,
+                          fullName,
                           style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 16),
                         ),
                         Text(
-                          '${student.usn} • ${student.semester}',
+                          '$usn • $semester',
                           style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
                         ),
                         Text(
-                          student.program,
+                          program,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(color: AppTheme.accentBlue, fontSize: 11, fontWeight: FontWeight.w600),
@@ -262,7 +348,7 @@ class _StudentDashboardTab extends StatelessWidget {
                     child: Column(
                       children: [
                         const Text('CGPA', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w800, color: AppTheme.primaryDark)),
-                        Text('${student.cgpa}', style: const TextStyle(fontWeight: FontWeight.w900, color: AppTheme.primaryDark, fontSize: 14)),
+                        Text('${student['cgpa'] ?? 'N/A'}', style: const TextStyle(fontWeight: FontWeight.w900, color: AppTheme.primaryDark, fontSize: 14)),
                       ],
                     ),
                   ),
@@ -273,75 +359,83 @@ class _StudentDashboardTab extends StatelessWidget {
             const SizedBox(height: 18),
 
             // Active Next Exam Countdown Card
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF0F172A), Color(0xFF1E293B)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
+            if (exams.isNotEmpty) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(20),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF0F172A), Color(0xFF1E293B)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.12),
+                      blurRadius: 16,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
                 ),
-                borderRadius: BorderRadius.circular(20),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.12),
-                    blurRadius: 16,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: AppTheme.accentAmber.withValues(alpha: 0.2),
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: AppTheme.accentAmber.withValues(alpha: 0.5)),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: AppTheme.accentAmber.withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: AppTheme.accentAmber.withValues(alpha: 0.5)),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.timer, color: AppTheme.accentAmber, size: 12),
+                              SizedBox(width: 4),
+                              Text('NEXT SCHEDULED EXAM', style: TextStyle(color: AppTheme.accentAmber, fontSize: 10, fontWeight: FontWeight.w800)),
+                            ],
+                          ),
                         ),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.timer, color: AppTheme.accentAmber, size: 12),
-                            SizedBox(width: 4),
-                            Text('NEXT SCHEDULED EXAM', style: TextStyle(color: AppTheme.accentAmber, fontSize: 10, fontWeight: FontWeight.w800)),
-                          ],
-                        ),
+                        Text(exams.first['exam_date'] ?? '', style: const TextStyle(color: Colors.white70, fontSize: 11)),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      '${exams.first['subject_code']}: ${exams.first['subject_name']}',
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 17),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      '${exams.first['room']} • Seat ${exams.first['seat']}',
+                      style: const TextStyle(color: Color(0xFF4ADE80), fontWeight: FontWeight.w700, fontSize: 13),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Time Slot
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(10),
                       ),
-                      Text(nextExam.examDate, style: const TextStyle(color: Colors.white70, fontSize: 11)),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    '${nextExam.courseCode}: ${nextExam.courseTitle}',
-                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 17),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    '${nextExam.hallNumber} • ${nextExam.deskNumber}',
-                    style: const TextStyle(color: Color(0xFF4ADE80), fontWeight: FontWeight.w700, fontSize: 13),
-                  ),
-                  const SizedBox(height: 16),
-
-                  // Countdown Time Grid
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      _buildCountdownPill('14', 'HOURS'),
-                      _buildCountdownPill('28', 'MINUTES'),
-                      _buildCountdownPill('45', 'SECONDS'),
-                    ],
-                  ),
-                ],
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.access_time, color: Colors.white70, size: 14),
+                          const SizedBox(width: 6),
+                          Text(exams.first['exam_time'] ?? '', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
-
-            const SizedBox(height: 22),
+              const SizedBox(height: 22),
+            ],
 
             // Registered Course Timetable
             Row(
@@ -352,6 +446,9 @@ class _StudentDashboardTab extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 12),
+
+            if (exams.isEmpty)
+              const Text('No exams scheduled yet.', style: TextStyle(color: AppTheme.textSecondary)),
 
             ...exams.map((exam) {
               return Container(
@@ -378,11 +475,11 @@ class _StudentDashboardTab extends StatelessWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text('${exam.courseCode}: ${exam.courseTitle}', style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 13)),
+                          Text('${exam['subject_code']}: ${exam['subject_name']}', style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 13)),
                           const SizedBox(height: 2),
-                          Text('${exam.examDate} • ${exam.timeSlot}', style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
+                          Text('${exam['exam_date']} • ${exam['exam_time']}', style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
                           const SizedBox(height: 2),
-                          Text(exam.hallNumber, style: const TextStyle(color: AppTheme.accentBlue, fontSize: 11, fontWeight: FontWeight.w600)),
+                          Text(exam['room'] ?? '', style: const TextStyle(color: AppTheme.accentBlue, fontSize: 11, fontWeight: FontWeight.w600)),
                         ],
                       ),
                     ),
@@ -393,7 +490,7 @@ class _StudentDashboardTab extends StatelessWidget {
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Text(
-                        exam.deskNumber,
+                        exam['seat'] ?? '',
                         style: const TextStyle(color: AppTheme.primaryDark, fontWeight: FontWeight.w900, fontSize: 12),
                       ),
                     ),
