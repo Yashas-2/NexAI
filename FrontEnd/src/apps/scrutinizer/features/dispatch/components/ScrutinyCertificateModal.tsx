@@ -106,7 +106,7 @@ export const ScrutinyCertificateModal: React.FC<ScrutinyCertificateModalProps> =
             {/* University Crest */}
             <div style={{ textAlign: 'center', borderBottom: '2px solid #0f172a', paddingBottom: '16px', marginBottom: '20px' }}>
               <div style={{ fontSize: '0.82rem', fontWeight: 800, letterSpacing: '1px', textTransform: 'uppercase', color: '#475569' }}>
-                NEXAI AUTONOMOUS UNIVERSITY OF TECHNOLOGY
+                MALNAD COLLEGE OF ENGINEERING
               </div>
               <h2 style={{ margin: '4px 0', fontSize: '1.4rem', fontWeight: 900, color: '#0f172a' }}>
                 CENTRAL VALUATION & SCRUTINY COMPLETION CERTIFICATE

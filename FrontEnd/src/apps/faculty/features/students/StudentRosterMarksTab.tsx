@@ -1,7 +1,6 @@
-import React, { useState, useRef } from 'react';
+import React, { useRef } from 'react';
 import { AssignedCourse, StudentGradeRecord } from '../../types';
 import {
-  Save,
   Search,
   Download,
   Upload,
@@ -19,7 +18,7 @@ interface StudentRosterMarksTabProps {
   onStudentFieldChange: (
     id: string,
     field: 'attendancePercent' | 'cie1' | 'cie2' | 'cie3' | 'labOrProject',
-    value: number
+    value: number | string
   ) => void;
   onSaveMarksToHOD: () => void;
 }
@@ -92,13 +91,11 @@ export const StudentRosterMarksTab: React.FC<StudentRosterMarksTabProps> = ({
               cie2: c2,
               cie3: c3,
               labOrProject: lab,
-              isModified: true
+              isModified: true,
+              saveStatus: 'UNSAVED' as const
             };
             
-            const totalC1 = c1 / 2;
-            const totalC2 = c2 / 2;
-            const totalC3 = c3 / 2;
-            newStudents[studentIndex].totalCIE = totalC1 + totalC2 + totalC3 + lab;
+            newStudents[studentIndex].totalCIE = c1 + c2 + c3 + lab;
             
             updatedCount++;
           }
@@ -152,28 +149,6 @@ export const StudentRosterMarksTab: React.FC<StudentRosterMarksTabProps> = ({
               ))}
             </select>
           </div>
-        </div>
-
-        <div style={{ display: 'flex', gap: '12px' }}>
-          <button
-            onClick={onSaveMarksToHOD}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              background: 'linear-gradient(135deg, #16A34A 0%, #15803D 100%)',
-              color: 'white',
-              border: 'none',
-              padding: '10px 20px',
-              borderRadius: '10px',
-              fontWeight: 800,
-              fontSize: '0.85rem',
-              cursor: 'pointer',
-              boxShadow: '0 4px 12px rgba(22,163,74,0.3)',
-            }}
-          >
-            <Save size={16} /> Submit Marks & Attendance to HOD
-          </button>
         </div>
       </div>
 
@@ -269,9 +244,9 @@ export const StudentRosterMarksTab: React.FC<StudentRosterMarksTabProps> = ({
                 <tr style={{ background: '#F8FAFC', borderBottom: '1px solid #E2E8F0', textAlign: 'left', color: '#64748B' }}>
                   <th style={{ padding: '12px 16px', fontWeight: 700 }}>USN & STUDENT</th>
                   <th style={{ padding: '12px 16px', fontWeight: 700 }}>ATTENDANCE %</th>
-                  <th style={{ padding: '12px 16px', fontWeight: 700 }}>CIE-1 (20M)</th>
-                  <th style={{ padding: '12px 16px', fontWeight: 700 }}>CIE-2 (20M)</th>
-                  <th style={{ padding: '12px 16px', fontWeight: 700 }}>CIE-3 (20M)</th>
+                  <th style={{ padding: '12px 16px', fontWeight: 700 }}>CIE-1 (10M)</th>
+                  <th style={{ padding: '12px 16px', fontWeight: 700 }}>CIE-2 (10M)</th>
+                  <th style={{ padding: '12px 16px', fontWeight: 700 }}>CIE-3 (10M)</th>
                   <th style={{ padding: '12px 16px', fontWeight: 700 }}>LAB/PROJ (20M)</th>
                   <th style={{ padding: '12px 16px', fontWeight: 700 }}>TOTAL CIE (50M)</th>
                   <th style={{ padding: '12px 16px', fontWeight: 700 }}>STATUS</th>
@@ -286,7 +261,8 @@ export const StudentRosterMarksTab: React.FC<StudentRosterMarksTabProps> = ({
                   </tr>
                 ) : (
                   filteredStudents.map(student => {
-                    const isShortage = student.attendancePercent < 75;
+                    const attNum = student.attendancePercent !== '' && student.attendancePercent !== null && student.attendancePercent !== undefined ? Number(student.attendancePercent) : null;
+                    const isShortage = attNum !== null && attNum < 85;
                     const isCIEPassing = student.totalCIE >= 20;
 
                     const inputStyle = {
@@ -321,9 +297,9 @@ export const StudentRosterMarksTab: React.FC<StudentRosterMarksTabProps> = ({
                               type="number"
                               min="0"
                               max="100"
-                              value={student.attendancePercent || 0}
+                              value={student.attendancePercent !== null && student.attendancePercent !== undefined ? student.attendancePercent : 100}
                               onChange={e =>
-                                onStudentFieldChange(student.id, 'attendancePercent', parseInt(e.target.value) || 0)
+                                onStudentFieldChange(student.id, 'attendancePercent', e.target.value === '' ? 100 : parseInt(e.target.value))
                               }
                               style={{...inputStyle, borderColor: isShortage ? '#FCA5A5' : '#CBD5E1'}}
                             />
@@ -334,9 +310,9 @@ export const StudentRosterMarksTab: React.FC<StudentRosterMarksTabProps> = ({
                         <td style={{ padding: '14px 16px' }}>
                           <input
                             type="number"
-                            min="0" max="20"
-                            value={student.cie1 || 0}
-                            onChange={e => onStudentFieldChange(student.id, 'cie1', parseInt(e.target.value) || 0)}
+                            min="0" max="10"
+                            value={student.cie1 !== null && student.cie1 !== undefined ? student.cie1 : 0}
+                            onChange={e => onStudentFieldChange(student.id, 'cie1', e.target.value === '' ? 0 : parseInt(e.target.value))}
                             style={inputStyle}
                           />
                         </td>
@@ -344,9 +320,19 @@ export const StudentRosterMarksTab: React.FC<StudentRosterMarksTabProps> = ({
                         <td style={{ padding: '14px 16px' }}>
                           <input
                             type="number"
-                            min="0" max="20"
-                            value={student.cie2 || 0}
-                            onChange={e => onStudentFieldChange(student.id, 'cie2', parseInt(e.target.value) || 0)}
+                            min="0" max="10"
+                            value={student.cie2 !== null && student.cie2 !== undefined ? student.cie2 : 0}
+                            onChange={e => onStudentFieldChange(student.id, 'cie2', e.target.value === '' ? 0 : parseInt(e.target.value))}
+                            style={inputStyle}
+                          />
+                        </td>
+
+                        <td style={{ padding: '14px 16px' }}>
+                          <input
+                            type="number"
+                            min="0" max="10"
+                            value={student.cie3 !== null && student.cie3 !== undefined ? student.cie3 : 0}
+                            onChange={e => onStudentFieldChange(student.id, 'cie3', e.target.value === '' ? 0 : parseInt(e.target.value))}
                             style={inputStyle}
                           />
                         </td>
@@ -355,18 +341,8 @@ export const StudentRosterMarksTab: React.FC<StudentRosterMarksTabProps> = ({
                           <input
                             type="number"
                             min="0" max="20"
-                            value={student.cie3 || 0}
-                            onChange={e => onStudentFieldChange(student.id, 'cie3', parseInt(e.target.value) || 0)}
-                            style={inputStyle}
-                          />
-                        </td>
-
-                        <td style={{ padding: '14px 16px' }}>
-                          <input
-                            type="number"
-                            min="0" max="20"
-                            value={student.labOrProject || 0}
-                            onChange={e => onStudentFieldChange(student.id, 'labOrProject', parseInt(e.target.value) || 0)}
+                            value={student.labOrProject !== null && student.labOrProject !== undefined ? student.labOrProject : 0}
+                            onChange={e => onStudentFieldChange(student.id, 'labOrProject', e.target.value === '' ? 0 : parseInt(e.target.value))}
                             style={inputStyle}
                           />
                         </td>
@@ -389,13 +365,21 @@ export const StudentRosterMarksTab: React.FC<StudentRosterMarksTabProps> = ({
                         </td>
 
                         <td style={{ padding: '14px 16px' }}>
-                          {student.isModified ? (
-                            <span style={{ fontSize: '0.72rem', color: '#D97706', fontWeight: 800, background: '#FEF3C7', padding: '4px 8px', borderRadius: '6px' }}>
-                              UNSAVED
-                            </span>
-                          ) : (
+                          {student.saveStatus === 'SYNCED' ? (
                             <span style={{ fontSize: '0.72rem', color: '#16A34A', fontWeight: 800, background: '#DCFCE7', padding: '4px 8px', borderRadius: '6px' }}>
                               SYNCED ✓
+                            </span>
+                          ) : student.saveStatus === 'SAVING' ? (
+                            <span style={{ fontSize: '0.72rem', color: '#2563EB', fontWeight: 800, background: '#DBEAFE', padding: '4px 8px', borderRadius: '6px' }}>
+                              SAVING...
+                            </span>
+                          ) : student.saveStatus === 'FAILED' ? (
+                            <span style={{ fontSize: '0.72rem', color: '#DC2626', fontWeight: 800, background: '#FEE2E2', padding: '4px 8px', borderRadius: '6px' }}>
+                              FAILED ✗
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: '0.72rem', color: '#D97706', fontWeight: 800, background: '#FEF3C7', padding: '4px 8px', borderRadius: '6px' }}>
+                              UNSAVED
                             </span>
                           )}
                         </td>

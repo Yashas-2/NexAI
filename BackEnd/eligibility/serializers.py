@@ -23,6 +23,7 @@ class StudentEligibilitySerializer(serializers.ModelSerializer):
         model = StudentEligibility
         fields = [
             "id", "student", "subject", "exam_session",
+            "student_details", "subject_details",
             "attendance_percentage", 
             "cie1_marks", "cie2_marks", "cie3_marks", "assignment_marks", "cie_marks",
             "is_eligible", "remarks",
@@ -73,6 +74,16 @@ class HallTicketSerializer(serializers.ModelSerializer):
         from scheduling.models import TimetableSlot, StudentSubjectEnrollment
         from eligibility.models import StudentEligibility
 
+        def _get_scrutiny_id(cie_config):
+            """Safely returns the scrutiny ID if it exists and is APPROVED."""
+            try:
+                s = cie_config.scrutiny
+                if s.status == 'APPROVED':
+                    return str(s.id)
+            except Exception:
+                pass
+            return None
+
         # Get the subjects the student is eligible for in this session
         eligible_subjects = StudentEligibility.objects.filter(
             student=obj.student,
@@ -97,9 +108,26 @@ class HallTicketSerializer(serializers.ModelSerializer):
         from vault.models import QuestionPaper
         # Pre-fetch all papers for this session
         papers_map = {
-            p.subject_id: str(p.id) 
+            str(p.subject_id): str(p.id) 
             for p in QuestionPaper.objects.filter(exam_session=obj.exam_session)
         }
+        
+        if 'CIE' in (obj.exam_session.name or '').upper():
+            from cie.models import CIEConfiguration, CIEQuestionPaperScrutiny
+            # Look for ANY CIE config (active or not) that has an APPROVED scrutiny
+            cie_configs = CIEConfiguration.objects.filter(
+                exam_session=obj.exam_session,
+            ).select_related('scrutiny')
+            for c in cie_configs:
+                try:
+                    scrutiny = CIEQuestionPaperScrutiny.objects.filter(
+                        cie_config=c,
+                        status='APPROVED',
+                    ).first()
+                    if scrutiny:
+                        papers_map[str(c.subject_id)] = str(scrutiny.id)
+                except Exception:
+                    pass
 
         data = []
         if slots.exists():
@@ -124,7 +152,7 @@ class HallTicketSerializer(serializers.ModelSerializer):
                     "seat": seat,
                     "desk_number": seat,
                     "slot_id": str(slot.id),
-                    "question_paper_id": papers_map.get(slot.subject_id),
+                    "question_paper_id": papers_map.get(str(slot.subject_id)),
                 })
         else:
             # Fallback: show eligible subjects even if no timetable slots exist yet
@@ -138,51 +166,72 @@ class HallTicketSerializer(serializers.ModelSerializer):
             if eligibilities.exists():
                 from cie.models import CIEConfiguration
                 for elig in eligibilities:
-                    # Try to get the CIE configuration for scheduled date/time
-                    # Look for the first active/existing config for this subject
-                    cie_config = CIEConfiguration.objects.filter(
+                    cie_configs = CIEConfiguration.objects.filter(
                         subject=elig.subject,
                         exam_session=obj.exam_session,
-                    ).order_by('cie_number').first()
+                    ).order_by('cie_number')
 
-                    exam_date = None
-                    start_time = None
-                    end_time = None
-                    exam_time = 'TBA'
-                    if cie_config:
-                        if cie_config.scheduled_date:
-                            exam_date = cie_config.scheduled_date.isoformat()
-                        if cie_config.scheduled_time:
-                            start_time = cie_config.scheduled_time.isoformat()
-                            from datetime import datetime, timedelta
-                            duration = timedelta(minutes=cie_config.duration_mins or 60)
-                            end_dt = (datetime.combine(datetime.today(), cie_config.scheduled_time) + duration).time()
-                            end_time = end_dt.isoformat()
-                            exam_time = (
-                                f"{cie_config.scheduled_time.strftime('%H:%M')} - "
-                                f"{end_dt.strftime('%H:%M')}"
-                            )
+                    if cie_configs.exists():
+                        for cie_config in cie_configs:
+                            exam_date = None
+                            start_time = None
+                            end_time = None
+                            exam_time = 'TBA'
+                            
+                            if cie_config.scheduled_date:
+                                exam_date = cie_config.scheduled_date.isoformat()
+                            if cie_config.scheduled_time:
+                                start_time = cie_config.scheduled_time.isoformat()
+                                from datetime import datetime, timedelta
+                                duration = timedelta(minutes=cie_config.duration_mins or 60)
+                                end_dt = (datetime.combine(datetime.today(), cie_config.scheduled_time) + duration).time()
+                                end_time = end_dt.isoformat()
+                                exam_time = (
+                                    f"{cie_config.scheduled_time.strftime('%H:%M')} - "
+                                    f"{end_dt.strftime('%H:%M')}"
+                                )
 
-                    data.append({
-                        "subject_code": elig.subject.code,
-                        "subject_name": elig.subject.name,
-                        "subject_title": elig.subject.name,
-                        "date": exam_date,
-                        "exam_date": exam_date,
-                        "start_time": start_time,
-                        "end_time": end_time,
-                        "exam_time": exam_time,
-                        "room": cie_config and getattr(cie_config, 'room', None) or 'TBA',
-                        "room_allocated": 'TBA',
-                        "room_number": 'TBA',
-                        "seat": 'Unassigned',
-                        "desk_number": 'Unassigned',
-                        "slot_id": None,
-                        "cie_marks": str(elig.cie_marks) if elig.cie_marks else 'N/A',
-                        "attendance": str(elig.attendance_percentage) if elig.attendance_percentage else 'N/A',
-                        "is_cie": True,
-                        "question_paper_id": papers_map.get(elig.subject_id),
-                    })
+                            data.append({
+                                "subject_code": elig.subject.code,
+                                "subject_name": f"{elig.subject.name} ({cie_config.get_cie_number_display()})",
+                                "subject_title": elig.subject.name,
+                                "date": exam_date,
+                                "exam_date": exam_date,
+                                "start_time": start_time,
+                                "end_time": end_time,
+                                "exam_time": exam_time,
+                                "room": getattr(cie_config, 'room', None) or 'TBA',
+                                "room_allocated": 'TBA',
+                                "room_number": 'TBA',
+                                "seat": 'Unassigned',
+                                "desk_number": 'Unassigned',
+                                "slot_id": None,
+                                "cie_marks": str(elig.cie_marks) if elig.cie_marks else 'N/A',
+                                "attendance": str(elig.attendance_percentage) if elig.attendance_percentage else 'N/A',
+                                "is_cie": True,
+                                "question_paper_id": _get_scrutiny_id(cie_config) or papers_map.get(str(elig.subject_id)),
+                            })
+                    else:
+                        data.append({
+                            "subject_code": elig.subject.code,
+                            "subject_name": elig.subject.name,
+                            "subject_title": elig.subject.name,
+                            "date": None,
+                            "exam_date": None,
+                            "start_time": None,
+                            "end_time": None,
+                            "exam_time": "TBA",
+                            "room": 'TBA',
+                            "room_allocated": 'TBA',
+                            "room_number": 'TBA',
+                            "seat": 'Unassigned',
+                            "desk_number": 'Unassigned',
+                            "slot_id": None,
+                            "cie_marks": str(elig.cie_marks) if elig.cie_marks else 'N/A',
+                            "attendance": str(elig.attendance_percentage) if elig.attendance_percentage else 'N/A',
+                            "is_cie": True,
+                            "question_paper_id": papers_map.get(str(elig.subject_id)),
+                        })
             else:
                 # Fallback of fallback: show enrolled subjects
                 enrolled = StudentSubjectEnrollment.objects.filter(
@@ -205,8 +254,9 @@ class HallTicketSerializer(serializers.ModelSerializer):
                         "seat": "Unassigned",
                         "desk_number": "Unassigned",
                         "slot_id": None,
-                        "is_cie": True,
-                        "question_paper_id": papers_map.get(enrollment.subject_id),
+                        "attendance": 'N/A',
+                        "is_cie": False,
+                        "question_paper_id": papers_map.get(str(enrollment.subject_id)),
                     })
         return data
 

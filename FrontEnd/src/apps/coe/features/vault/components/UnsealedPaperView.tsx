@@ -147,7 +147,7 @@ export const UnsealedPaperView: React.FC<UnsealedPaperViewProps> = ({
         {/* Paper Header */}
         <div style={{ textAlign: 'center', borderBottom: '2px solid #0f172a', paddingBottom: '20px', marginBottom: '24px', position: 'relative', zIndex: 1 }}>
           <div style={{ fontSize: '0.9rem', fontWeight: 700, letterSpacing: '1px', textTransform: 'uppercase', color: '#475569', fontFamily: 'sans-serif' }}>
-            NEXAI AUTONOMOUS UNIVERSITY OF TECHNOLOGY
+            MALNAD COLLEGE OF ENGINEERING
           </div>
           <h1 style={{ margin: '8px 0', fontSize: '1.6rem', fontWeight: 800, color: '#0f172a', letterSpacing: '-0.5px' }}>
             END SEMESTER EXAMINATIONS — {paper.examSession.toUpperCase()}

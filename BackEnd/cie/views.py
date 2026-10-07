@@ -23,11 +23,11 @@ from users.constants import UserRole
 
 class CIEConfigListCreateView(generics.ListCreateAPIView):
     """
-    GET  /cie/configs/  – List all CIE configs (filtered by HOD dept or faculty assignment)
-    POST /cie/configs/  – HOD creates a new CIE config for a subject+session+CIE_number
+    GET  /cie/configs/  – List CIE configs (all staff can read; HOD sees their dept, Faculty sees assigned)
+    POST /cie/configs/  – HOD creates a new CIE config
     """
     serializer_class = CIEConfigurationSerializer
-    permission_classes = [IsChiefSuperintendentOrHOD]
+    permission_classes = [IsStaff]
 
     def get_queryset(self):
         user = self.request.user
@@ -38,6 +38,7 @@ class CIEConfigListCreateView(generics.ListCreateAPIView):
             dept = getattr(user, 'department', None)
             if dept:
                 qs = qs.filter(subject__department=dept)
+        # Faculty sees all configs (filtered by their courses on the frontend)
         # Filter by query params
         session_id = self.request.query_params.get('session')
         subject_id = self.request.query_params.get('subject')
@@ -51,6 +52,8 @@ class CIEConfigListCreateView(generics.ListCreateAPIView):
         return qs
 
     def perform_create(self, serializer):
+        if self.request.user.role not in (UserRole.HOD, UserRole.CHIEF_SUPERINTENDENT):
+            return Response({"error": "Only HOD can create CIE configs."}, status=403)
         serializer.save(created_by=self.request.user)
 
 
@@ -140,10 +143,10 @@ class CIEMarksBulkUpsertView(APIView):
         except CIEConfiguration.DoesNotExist:
             return Response({"error": "CIE config not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Authorization: only assigned faculty or HOD of that dept
+        # Authorization: only assigned faculty, course coordinator, or HOD of that dept
         user = request.user
-        if user.role == UserRole.FACULTY and config.assigned_faculty != user:
-            return Response({"error": "Not assigned to this CIE."}, status=status.HTTP_403_FORBIDDEN)
+        if user.role == UserRole.FACULTY and config.assigned_faculty != user and config.subject.coordinator != user:
+            return Response({"error": "Not assigned to this CIE or course."}, status=status.HTTP_403_FORBIDDEN)
         if user.role == UserRole.HOD:
             dept = getattr(user, 'department', None)
             if dept and config.subject.department != dept:
@@ -325,7 +328,7 @@ class CIEBulkEligibilityView(APIView):
 class CIEScrutinyListCreateView(generics.ListCreateAPIView):
     """
     GET  /cie/scrutiny/  – HOD views papers to review; Faculty views their own submissions
-    POST /cie/scrutiny/  – Faculty submits a question paper for HOD scrutiny
+    POST /cie/scrutiny/  – Faculty submits/updates a question paper for HOD scrutiny
     """
     serializer_class = CIEQuestionPaperScrutinySerializer
     permission_classes = [IsStaff]
@@ -343,12 +346,20 @@ class CIEScrutinyListCreateView(generics.ListCreateAPIView):
             qs = qs.filter(submitted_by=user)
         return qs
 
-    def perform_create(self, serializer):
-        serializer.save(
-            submitted_by=self.request.user,
-            submitted_at=timezone.now(),
-            status=CIEQuestionPaperScrutiny.ScrutinyStatus.PENDING,
-        )
+    def create(self, request, *args, **kwargs):
+        cie_config_id = request.data.get('cie_config')
+        # Upsert: if scrutiny already exists for this config, update it
+        existing = CIEQuestionPaperScrutiny.objects.filter(cie_config_id=cie_config_id).first()
+        if existing:
+            serializer = self.get_serializer(existing, data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save(
+                submitted_by=request.user,
+                submitted_at=timezone.now(),
+                status=CIEQuestionPaperScrutiny.ScrutinyStatus.PENDING,
+            )
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        return super().create(request, *args, **kwargs)
 
 
 class CIEScrutinyDetailView(generics.RetrieveUpdateAPIView):
@@ -413,14 +424,17 @@ class CIEScrutinyRejectView(APIView):
             "note": note,
         })
 
-from rest_framework import viewsets
+from rest_framework import viewsets, status
 from rest_framework.decorators import action
+from rest_framework.response import Response
 from .models import CIEAttempt, CIEAnswer
+from .ocr_service import extract_text_from_base64
 from .serializers import CIEAttemptSerializer, CIEAnswerSerializer
 
 class CIETestViewSet(viewsets.ModelViewSet):
     """
     ViewSet for students taking CIE tests digitally.
+    Also exposes faculty-facing actions: list_submissions and grade_answer.
     """
     serializer_class = CIEAttemptSerializer
     permission_classes = [IsAuthenticated]
@@ -428,7 +442,10 @@ class CIETestViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         if user.role == UserRole.STUDENT:
-            return CIEAttempt.objects.filter(student=user.student_profile)
+            return CIEAttempt.objects.filter(student=user.student_profile).select_related('cie_config')
+        # Faculty / HOD / CS can view all attempts
+        if user.role in [UserRole.FACULTY, UserRole.HOD, 'CHIEF_SUPERINTENDENT']:
+            return CIEAttempt.objects.all().select_related('student__user', 'cie_config__subject')
         return CIEAttempt.objects.none()
 
     @action(detail=False, methods=['post'])
@@ -485,3 +502,217 @@ class CIETestViewSet(viewsets.ModelViewSet):
         attempt.save()
         
         return Response({"status": "Exam submitted successfully"})
+
+    @action(detail=False, methods=['post'], url_path='kiosk_submit')
+    def kiosk_submit(self, request):
+        user = request.user
+        if user.role != UserRole.STUDENT:
+            return Response({"error": "Only students can submit exams via kiosk."}, status=403)
+            
+        subject_code = request.data.get('subject_code')
+        if not subject_code:
+            return Response({"error": "subject_code is required."}, status=400)
+            
+        from scheduling.models import Subject
+        try:
+            subject = Subject.objects.get(code=subject_code)
+            config = CIEConfiguration.objects.get(subject=subject, is_active=True)
+        except Subject.DoesNotExist:
+            return Response({"error": "Subject not found."}, status=404)
+        except CIEConfiguration.DoesNotExist:
+            return Response({"error": "No active CIE config found for this subject."}, status=404)
+        except CIEConfiguration.MultipleObjectsReturned:
+            config = CIEConfiguration.objects.filter(subject=subject, is_active=True).first()
+            
+        attempt, created = CIEAttempt.objects.get_or_create(
+            student=user.student_profile,
+            cie_config=config
+        )
+        
+        if attempt.is_locked:
+            return Response({"error": "Exam Already Submitted."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        answers_data = request.data.get('answers', [])
+        
+        # Detect blank submission: no text AND no image in any answer
+        has_content = False
+        for ans in answers_data:
+            text = (ans.get('answer_text') or '').strip()
+            image = (ans.get('answer_image_base64') or '').strip()
+            if text or image:
+                has_content = True
+                break
+        
+        for ans in answers_data:
+            CIEAnswer.objects.update_or_create(
+                attempt=attempt,
+                question_text=ans.get('question_text', ''),
+                defaults={
+                    "answer_text": ans.get('answer_text', ''),
+                    "answer_image_base64": ans.get('answer_image_base64', ''),
+                    "extracted_text": extract_text_from_base64(ans.get('answer_image_base64', '')) if ans.get('answer_image_base64') else ''
+                }
+            )
+            
+        attempt.is_locked = True
+        attempt.submitted_at = timezone.now()
+        attempt.submission_status = CIEAttempt.SubmissionStatus.SUBMITTED if has_content else CIEAttempt.SubmissionStatus.NOT_ATTENDED
+        attempt.save()
+        
+        import hashlib
+        receipt_hash = hashlib.sha256(f"{attempt.id}-{attempt.submitted_at}".encode()).hexdigest()[:24]
+        
+        return Response({
+            "status": "Exam submitted successfully",
+            "receipt_hash": "0x" + receipt_hash,
+            "submission_status": attempt.submission_status,
+        })
+
+    # ── Faculty Actions ──────────────────────────────────────────────────────
+
+    @action(detail=False, methods=['get'], url_path='submissions')
+    def list_submissions(self, request):
+        """
+        GET /cie/test/submissions/?cie_config=<uuid>
+        Faculty retrieves all submitted CIEAttempts (with answers) for a given CIE config.
+        """
+        user = request.user
+        if user.role == UserRole.STUDENT:
+            return Response({"error": "Access denied."}, status=403)
+
+        cie_config_id = request.query_params.get('cie_config')
+        if not cie_config_id:
+            return Response({"error": "cie_config query param is required."}, status=400)
+
+        try:
+            config = CIEConfiguration.objects.get(pk=cie_config_id)
+        except CIEConfiguration.DoesNotExist:
+            return Response({"error": "CIE config not found."}, status=404)
+
+        # Authorization: only assigned faculty, course coordinator, or HOD of that dept
+        if user.role == UserRole.FACULTY and config.assigned_faculty != user and config.subject.coordinator != user:
+            return Response({"error": "Not assigned to this CIE or course."}, status=403)
+        if user.role == UserRole.HOD:
+            dept = getattr(user, 'department', None)
+            if dept and config.subject.department != dept:
+                return Response({"error": "Not authorised for this department."}, status=403)
+
+        attempts = CIEAttempt.objects.filter(
+            cie_config=config, is_locked=True
+        ).select_related('student__user').prefetch_related('answers')
+
+        # Optional filter by submission status
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            attempts = attempts.filter(submission_status=status_filter)
+
+        data = []
+        for attempt in attempts:
+            # Check if submission is blank (all answers empty)
+            has_content = False
+            for ans in attempt.answers.all():
+                if (ans.answer_text and ans.answer_text.strip()) or (ans.answer_image_base64 and ans.answer_image_base64.strip()):
+                    has_content = True
+                    break
+            
+            data.append({
+                "attempt_id": str(attempt.id),
+                "student_usn": attempt.student.usn,
+                "student_name": attempt.student.user.full_name,
+                "submitted_at": attempt.submitted_at,
+                "submission_status": attempt.submission_status,
+                "answers": [
+                    {
+                        "answer_id": str(ans.id),
+                        "question_text": ans.question_text,
+                        "answer_text": ans.answer_text,
+                        "answer_image_base64": ans.answer_image_base64,
+                        "extracted_text": ans.extracted_text,
+                        "marks_awarded": ans.marks_awarded,
+                    }
+                    for ans in attempt.answers.all()
+                ],
+            })
+
+        return Response({"count": len(data), "submissions": data})
+
+    @action(detail=False, methods=['post'], url_path='grade_answer')
+    def grade_answer(self, request):
+        """
+        POST /cie/test/grade_answer/
+        Faculty grades a single CIEAnswer and auto-syncs the total to CIEMarks.
+
+        Body: {
+            "answer_id": "<uuid>",
+            "marks_awarded": 15.5
+        }
+        """
+        user = request.user
+        if user.role == UserRole.STUDENT:
+            return Response({"error": "Access denied."}, status=403)
+
+        answer_id = request.data.get('answer_id')
+        marks_awarded = request.data.get('marks_awarded')
+
+        if answer_id is None or marks_awarded is None:
+            return Response({"error": "answer_id and marks_awarded are required."}, status=400)
+
+        try:
+            answer = CIEAnswer.objects.select_related(
+                'attempt__student', 'attempt__cie_config__subject', 'attempt__cie_config'
+            ).get(pk=answer_id)
+        except CIEAnswer.DoesNotExist:
+            return Response({"error": "Answer not found."}, status=404)
+
+        config = answer.attempt.cie_config
+
+        # Authorization guard
+        if user.role == UserRole.FACULTY and config.assigned_faculty != user and config.subject.coordinator != user:
+            return Response({"error": "Not assigned to this CIE or course."}, status=403)
+        if user.role == UserRole.HOD:
+            dept = getattr(user, 'department', None)
+            if dept and config.subject.department != dept:
+                return Response({"error": "Not authorised for this department."}, status=403)
+
+        try:
+            marks_awarded = float(marks_awarded)
+        except (ValueError, TypeError):
+            return Response({"error": "marks_awarded must be a number."}, status=400)
+
+        if marks_awarded < 0:
+            return Response({"error": "marks_awarded cannot be negative."}, status=400)
+
+        # Save marks on the individual answer
+        answer.marks_awarded = marks_awarded
+        answer.save(update_fields=['marks_awarded'])
+
+        # ── Auto-sync total to CIEMarks ──────────────────────────────────────
+        # Sum all graded answers for this attempt.
+        from django.db.models import Sum
+        total = CIEAnswer.objects.filter(
+            attempt=answer.attempt, marks_awarded__isnull=False
+        ).aggregate(total=Sum('marks_awarded'))['total'] or 0
+
+        # Clamp to config's max_marks
+        total = min(float(total), float(config.max_marks))
+
+        cie_marks_obj, created = CIEMarks.objects.update_or_create(
+            student=answer.attempt.student,
+            cie_config=config,
+            defaults={
+                'marks_awarded': total,
+                'is_absent': False,
+                'remarks': f'Auto-synced from digital answers. Graded by {user.full_name}.',
+                'entered_by': user,
+            }
+        )
+
+        return Response({
+            "status": "ok",
+            "answer_id": str(answer.id),
+            "marks_awarded_for_answer": marks_awarded,
+            "cie_marks_total": float(cie_marks_obj.marks_awarded),
+            "cie_marks_id": str(cie_marks_obj.id),
+            "was_created": created,
+        })
+

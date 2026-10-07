@@ -4,7 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     StudentEligibilityViewSet, HallTicketViewSet,
     BulkEligibilityUploadView, GenerateHallTicketsView,
-    GenerateEligibilityView
+    GenerateEligibilityView, FacultyMarksSyncView
 )
 
 router = DefaultRouter()
@@ -16,4 +16,5 @@ urlpatterns = [
     path('upload-csv/', BulkEligibilityUploadView.as_view(), name='bulk-upload-csv'),
     path('generate-hall-tickets/<uuid:session_id>/', GenerateHallTicketsView.as_view(), name='generate-hall-tickets'),
     path('generate/', GenerateEligibilityView.as_view(), name='generate-eligibility'),
+    path('sync-marks/', FacultyMarksSyncView.as_view(), name='faculty-sync-marks'),
 ]

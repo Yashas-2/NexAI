@@ -20,6 +20,7 @@ import {
   Check
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useNavigate } from 'react-router-dom';
 
 interface Props {
   courses: CourseRecord[];
@@ -36,6 +37,7 @@ export const CreateDepartmentExamModal: React.FC<Props> = ({
   onClose,
   onCreateSessions,
 }) => {
+  const navigate = useNavigate();
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
 
   // Step 1: Exam Series & Subjects Selection
@@ -58,11 +60,23 @@ export const CreateDepartmentExamModal: React.FC<Props> = ({
   }, []);
 
   // Step 2: Date, Sessions Per Day & Slot Timings
-  const [startDate, setStartDate] = useState('2026-09-22');
+  const [startDate, setStartDate] = useState(new Date().toISOString().split('T')[0]);
   const [sessionsPerDay, setSessionsPerDay] = useState<number>(2);
-  const [slot1Timing, setSlot1Timing] = useState('09:30 AM - 11:00 AM (Morning)');
-  const [slot2Timing, setSlot2Timing] = useState('02:00 PM - 03:30 PM (Afternoon)');
-  const [slot3Timing, setSlot3Timing] = useState('04:00 PM - 05:30 PM (Evening)');
+  const [slot1Start, setSlot1Start] = useState('09:30');
+  const [slot1End, setSlot1End] = useState('11:00');
+  const [slot2Start, setSlot2Start] = useState('14:00');
+  const [slot2End, setSlot2End] = useState('15:30');
+  const [slot3Start, setSlot3Start] = useState('16:00');
+  const [slot3End, setSlot3End] = useState('17:30');
+  
+  const formatTime = (timeStr: string) => {
+    if (!timeStr) return '';
+    const [hours, minutes] = timeStr.split(':');
+    const h = parseInt(hours, 10);
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    const formattedHours = h % 12 || 12;
+    return `${formattedHours.toString().padStart(2, '0')}:${minutes} ${ampm}`;
+  };
   const [selectedHallNames, setSelectedHallNames] = useState<string[]>(
     halls.slice(0, 2).map(h => h.roomNumber)
   );
@@ -84,7 +98,11 @@ export const CreateDepartmentExamModal: React.FC<Props> = ({
   // Automated Equal Faculty Workload Engine calculation
   const calculatedSchedule = useMemo(() => {
     const selectedCoursesList = courses.filter(c => selectedCourseCodes.includes(c.code));
-    const activeTimings = [slot1Timing, slot2Timing, slot3Timing].slice(0, sessionsPerDay);
+    const activeTimings = [
+      `${formatTime(slot1Start)} - ${formatTime(slot1End)}`,
+      `${formatTime(slot2Start)} - ${formatTime(slot2End)}`,
+      `${formatTime(slot3Start)} - ${formatTime(slot3End)}`
+    ].slice(0, sessionsPerDay);
 
     const generatedSessions: DepartmentExamSession[] = [];
     const facultyDutyCounts: Record<string, number> = {};
@@ -95,7 +113,7 @@ export const CreateDepartmentExamModal: React.FC<Props> = ({
       facultyAssignments[f.id] = [];
     });
 
-    let currentDateObj = new Date(startDate);
+    let currentDateObj = new Date(startDate || new Date().toISOString().split('T')[0]);
     let timingIndex = 0;
     let facultyRotationIndex = 0;
 
@@ -170,9 +188,12 @@ export const CreateDepartmentExamModal: React.FC<Props> = ({
     examType,
     startDate,
     sessionsPerDay,
-    slot1Timing,
-    slot2Timing,
-    slot3Timing,
+    slot1Start,
+    slot1End,
+    slot2Start,
+    slot2End,
+    slot3Start,
+    slot3End,
     selectedHallNames,
     facultyMembers,
   ]);
@@ -188,6 +209,16 @@ export const CreateDepartmentExamModal: React.FC<Props> = ({
         const match = c.semester?.match(/(\d+)/);
         return match ? parseInt(match[1]) : 5;
       }))];
+      const activeTimings = [
+        `${formatTime(slot1Start)} - ${formatTime(slot1End)}`,
+        `${formatTime(slot2Start)} - ${formatTime(slot2End)}`,
+        `${formatTime(slot3Start)} - ${formatTime(slot3End)}`
+      ].slice(0, sessionsPerDay);
+      const totalDays = Math.ceil(selectedCourseCodes.length / sessionsPerDay);
+      const endDateObj = new Date(startDate);
+      if (totalDays > 1) endDateObj.setDate(endDateObj.getDate() + totalDays - 1);
+      const endDateStr = endDateObj.toISOString().split('T')[0];
+
       const res = await api.post('/scheduling/sessions/', {
         name: `${examType} Series - Fall 2026`,
         session_type: 'CIE',
@@ -195,8 +226,11 @@ export const CreateDepartmentExamModal: React.FC<Props> = ({
         semester: semesters[0] || null,
         academic_year: '2026-27',
         start_date: startDate,
-        end_date: startDate,
+        end_date: endDateStr,
+        exams_per_day: sessionsPerDay,
+        selected_slots: activeTimings,
         subject_codes: selectedCourseCodes,
+        calculated_sessions: calculatedSchedule.sessions,
         ...(selectedCoeSessionId ? { linked_see_session: selectedCoeSessionId } : {}),
       });
 
@@ -221,7 +255,10 @@ export const CreateDepartmentExamModal: React.FC<Props> = ({
 
       onCreateSessions([newSession]);
       toast.success(`Successfully scheduled ${examType} session in backend!`);
+      // User requested a popup that redirects them to scheduling page
+      alert(`Schedule Batch successfully locked and confirmed!\nRedirecting to Department Examination Scheduling...`);
       onClose();
+      navigate('/hod/scheduling');
     } catch (err: any) {
       toast.error(
         err.response?.data 
@@ -544,12 +581,21 @@ export const CreateDepartmentExamModal: React.FC<Props> = ({
                     <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 700, color: '#64748B', marginBottom: '4px' }}>
                       Slot 1 Timing (Morning Session):
                     </label>
-                    <input
-                      type="text"
-                      value={slot1Timing}
-                      onChange={e => setSlot1Timing(e.target.value)}
-                      style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #CBD5E1', fontSize: '0.82rem', fontWeight: 700, boxSizing: 'border-box' }}
-                    />
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <input
+                        type="time"
+                        value={slot1Start}
+                        onChange={e => setSlot1Start(e.target.value)}
+                        style={{ flex: 1, padding: '9px 12px', borderRadius: '8px', border: '1px solid #CBD5E1', fontSize: '0.82rem', fontWeight: 700, boxSizing: 'border-box' }}
+                      />
+                      <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#64748B' }}>to</span>
+                      <input
+                        type="time"
+                        value={slot1End}
+                        onChange={e => setSlot1End(e.target.value)}
+                        style={{ flex: 1, padding: '9px 12px', borderRadius: '8px', border: '1px solid #CBD5E1', fontSize: '0.82rem', fontWeight: 700, boxSizing: 'border-box' }}
+                      />
+                    </div>
                   </div>
 
                   {sessionsPerDay >= 2 && (
@@ -557,12 +603,21 @@ export const CreateDepartmentExamModal: React.FC<Props> = ({
                       <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 700, color: '#64748B', marginBottom: '4px' }}>
                         Slot 2 Timing (Afternoon Session):
                       </label>
-                      <input
-                        type="text"
-                        value={slot2Timing}
-                        onChange={e => setSlot2Timing(e.target.value)}
-                        style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #CBD5E1', fontSize: '0.82rem', fontWeight: 700, boxSizing: 'border-box' }}
-                      />
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <input
+                          type="time"
+                          value={slot2Start}
+                          onChange={e => setSlot2Start(e.target.value)}
+                          style={{ flex: 1, padding: '9px 12px', borderRadius: '8px', border: '1px solid #CBD5E1', fontSize: '0.82rem', fontWeight: 700, boxSizing: 'border-box' }}
+                        />
+                        <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#64748B' }}>to</span>
+                        <input
+                          type="time"
+                          value={slot2End}
+                          onChange={e => setSlot2End(e.target.value)}
+                          style={{ flex: 1, padding: '9px 12px', borderRadius: '8px', border: '1px solid #CBD5E1', fontSize: '0.82rem', fontWeight: 700, boxSizing: 'border-box' }}
+                        />
+                      </div>
                     </div>
                   )}
 
@@ -571,12 +626,21 @@ export const CreateDepartmentExamModal: React.FC<Props> = ({
                       <label style={{ display: 'block', fontSize: '0.72rem', fontWeight: 700, color: '#64748B', marginBottom: '4px' }}>
                         Slot 3 Timing (Late Afternoon / Lab Session):
                       </label>
-                      <input
-                        type="text"
-                        value={slot3Timing}
-                        onChange={e => setSlot3Timing(e.target.value)}
-                        style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1px solid #CBD5E1', fontSize: '0.82rem', fontWeight: 700, boxSizing: 'border-box' }}
-                      />
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <input
+                          type="time"
+                          value={slot3Start}
+                          onChange={e => setSlot3Start(e.target.value)}
+                          style={{ flex: 1, padding: '9px 12px', borderRadius: '8px', border: '1px solid #CBD5E1', fontSize: '0.82rem', fontWeight: 700, boxSizing: 'border-box' }}
+                        />
+                        <span style={{ fontSize: '0.82rem', fontWeight: 600, color: '#64748B' }}>to</span>
+                        <input
+                          type="time"
+                          value={slot3End}
+                          onChange={e => setSlot3End(e.target.value)}
+                          style={{ flex: 1, padding: '9px 12px', borderRadius: '8px', border: '1px solid #CBD5E1', fontSize: '0.82rem', fontWeight: 700, boxSizing: 'border-box' }}
+                        />
+                      </div>
                     </div>
                   )}
                 </div>

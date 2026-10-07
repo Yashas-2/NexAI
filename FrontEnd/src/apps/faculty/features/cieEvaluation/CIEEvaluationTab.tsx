@@ -16,7 +16,7 @@ interface CIEEvaluationTabProps {
   onSelectCourseCode: (code: string) => void;
   scripts: CIEScannedScript[];
   onUpdateScript: (updated: CIEScannedScript) => void;
-  onValuationComplete: (awardedTotal: number, studentId: string, testType: 'CIE-1' | 'CIE-2') => void;
+  onValuationComplete: (awardedTotal: number, studentUSN: string, testType: 'CIE-1' | 'CIE-2', maxMarks: number) => void;
 }
 
 export const CIEEvaluationTab: React.FC<CIEEvaluationTabProps> = ({
@@ -39,7 +39,7 @@ export const CIEEvaluationTab: React.FC<CIEEvaluationTabProps> = ({
     const matchesTest = testFilter === 'ALL' || s.testType === testFilter;
     const matchesStatus =
       statusFilter === 'ALL' ||
-      (statusFilter === 'PENDING' && s.status === 'PENDING_VALUATION') ||
+      (statusFilter === 'PENDING' && (s.status === 'PENDING_VALUATION' || s.status === 'NOT_SUBMITTED')) ||
       (statusFilter === 'EVALUATED' && s.status === 'EVALUATED');
     const matchesSearch =
       s.studentName.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -57,10 +57,10 @@ export const CIEEvaluationTab: React.FC<CIEEvaluationTabProps> = ({
         onUpdateScript={onUpdateScript}
         onClose={() => setActiveScriptId(null)}
         onSubmitSuccess={(awardedTotal, studentId, testType) => {
-          onValuationComplete(awardedTotal, studentId, testType);
+          onValuationComplete(awardedTotal, activeScript.studentUSN, testType, activeScript.maxMarks);
           setActiveScriptId(null);
           toast.success(
-            `CIE Valuation Saved! Awarded ${awardedTotal}/30 Marks — Automatically synchronized into student's CIE score!`,
+            `CIE Valuation Saved! Awarded ${awardedTotal}/${activeScript.maxMarks} Marks — Automatically synchronized into student's CIE score!`,
             { icon: '🎯', duration: 4500 }
           );
         }}
@@ -209,7 +209,7 @@ export const CIEEvaluationTab: React.FC<CIEEvaluationTabProps> = ({
         <div style={{ background: '#FFFFFF', padding: '16px 20px', borderRadius: '14px', border: '1.5px solid #E2E8F0', boxShadow: '0 2px 6px rgba(0,0,0,0.02)' }}>
           <div style={{ fontSize: '0.75rem', fontWeight: 800, color: '#64748B' }}>AVERAGE CIE SCORE</div>
           <div style={{ fontSize: '1.5rem', fontWeight: 900, color: '#4F46E5', marginTop: '4px' }}>
-            {avgScore} <span style={{ fontSize: '0.85rem', color: '#94A3B8' }}>/ 30M</span>
+            {avgScore} <span style={{ fontSize: '0.85rem', color: '#94A3B8' }}>/ {courseScripts.length > 0 ? courseScripts[0].maxMarks : 30}M</span>
           </div>
           <div style={{ fontSize: '0.72rem', color: '#94A3B8', marginTop: '2px' }}>Across evaluated answer scripts</div>
         </div>
@@ -294,6 +294,7 @@ export const CIEEvaluationTab: React.FC<CIEEvaluationTabProps> = ({
           ) : (
             filteredScripts.map(script => {
               const isEvaluated = script.status === 'EVALUATED';
+              const isNotSubmitted = script.status === 'NOT_SUBMITTED' || script.totalPages === 0;
 
               return (
                 <div
@@ -314,8 +315,8 @@ export const CIEEvaluationTab: React.FC<CIEEvaluationTabProps> = ({
                       width: '42px',
                       height: '42px',
                       borderRadius: '10px',
-                      background: isEvaluated ? '#DCFCE7' : '#FEF3C7',
-                      color: isEvaluated ? '#15803D' : '#D97706',
+                      background: isEvaluated ? '#DCFCE7' : isNotSubmitted ? '#FEE2E2' : '#FEF3C7',
+                      color: isEvaluated ? '#15803D' : isNotSubmitted ? '#B91C1C' : '#D97706',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
@@ -346,7 +347,7 @@ export const CIEEvaluationTab: React.FC<CIEEvaluationTabProps> = ({
                           <>
                             <span>•</span>
                             <span style={{ color: '#2563EB', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                              <Sparkles size={12} /> AI Suggested: {script.aiSuggestedMarks}/30M
+                              <Sparkles size={12} /> AI Suggested: {script.aiSuggestedMarks}/{script.maxMarks}M
                             </span>
                           </>
                         )}
@@ -372,6 +373,17 @@ export const CIEEvaluationTab: React.FC<CIEEvaluationTabProps> = ({
                           GRADED & RECORDED ✓
                         </span>
                       </div>
+                    ) : isNotSubmitted ? (
+                      <span style={{
+                        background: '#FEE2E2',
+                        color: '#B91C1C',
+                        padding: '4px 10px',
+                        borderRadius: '6px',
+                        fontSize: '0.75rem',
+                        fontWeight: 800,
+                      }}>
+                        NOT SUBMITTED
+                      </span>
                     ) : (
                       <span style={{
                         background: '#FEF3C7',
@@ -386,23 +398,24 @@ export const CIEEvaluationTab: React.FC<CIEEvaluationTabProps> = ({
                     )}
 
                     <button
-                      onClick={() => setActiveScriptId(script.id)}
+                      onClick={() => !isNotSubmitted && setActiveScriptId(script.id)}
+                      disabled={isNotSubmitted}
                       style={{
                         display: 'flex',
                         alignItems: 'center',
                         gap: '6px',
-                        background: isEvaluated ? '#F1F5F9' : 'linear-gradient(135deg, #4F46E5 0%, #3730A3 100%)',
-                        color: isEvaluated ? '#334155' : 'white',
-                        border: isEvaluated ? '1px solid #CBD5E1' : 'none',
+                        background: isEvaluated || isNotSubmitted ? '#F1F5F9' : 'linear-gradient(135deg, #4F46E5 0%, #3730A3 100%)',
+                        color: isEvaluated || isNotSubmitted ? '#94A3B8' : 'white',
+                        border: isEvaluated || isNotSubmitted ? '1px solid #CBD5E1' : 'none',
                         padding: '9px 16px',
                         borderRadius: '8px',
                         fontSize: '0.82rem',
                         fontWeight: 800,
-                        cursor: 'pointer',
-                        boxShadow: isEvaluated ? 'none' : '0 2px 8px rgba(79,70,229,0.25)',
+                        cursor: isNotSubmitted ? 'not-allowed' : 'pointer',
+                        boxShadow: isEvaluated || isNotSubmitted ? 'none' : '0 2px 8px rgba(79,70,229,0.25)',
                       }}
                     >
-                      <PenTool size={14} /> {isEvaluated ? 'Review / Re-evaluate' : 'Open Evaluation Studio →'}
+                      <PenTool size={14} /> {isEvaluated ? 'Review / Re-evaluate' : isNotSubmitted ? 'Unavailable' : 'Open Evaluation Studio →'}
                     </button>
                   </div>
                 </div>

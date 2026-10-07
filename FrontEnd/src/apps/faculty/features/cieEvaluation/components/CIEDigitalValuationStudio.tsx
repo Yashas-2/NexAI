@@ -11,6 +11,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { api } from '@/services/api';
 
 interface CIEDigitalValuationStudioProps {
   script: CIEScannedScript;
@@ -54,14 +55,16 @@ export const CIEDigitalValuationStudio: React.FC<CIEDigitalValuationStudioProps>
       newAnn = { id: `ann_${Date.now()}`, pageNumber: currentPage, type: 'TICK', x, y };
     } else if (activeTool === 'CROSS') {
       newAnn = { id: `ann_${Date.now()}`, pageNumber: currentPage, type: 'CROSS', x, y };
-    } else if (activeTool === 'STEP_1') {
-      newAnn = { id: `ann_${Date.now()}`, pageNumber: currentPage, type: 'STEP_MARK', x, y, marksValue: 1 };
-    } else if (activeTool === 'STEP_2') {
-      newAnn = { id: `ann_${Date.now()}`, pageNumber: currentPage, type: 'STEP_MARK', x, y, marksValue: 2 };
-    } else if (activeTool === 'STEP_5') {
-      newAnn = { id: `ann_${Date.now()}`, pageNumber: currentPage, type: 'STEP_MARK', x, y, marksValue: 5 };
+    } else if (activeTool === 'STEP_1' || activeTool === 'STEP_2' || activeTool === 'STEP_5') {
+      const marksValue = activeTool === 'STEP_1' ? 1 : activeTool === 'STEP_2' ? 2 : 5;
+      newAnn = { id: `ann_${Date.now()}`, pageNumber: currentPage, type: 'STEP_MARK', x, y, marksValue };
+      // Also automatically award marks to the current question
+      const currentMarks = currentQuestion.awardedMarks || 0;
+      handleAwardMarks(currentMarks + marksValue);
     } else {
-      newAnn = { id: `ann_${Date.now()}`, pageNumber: currentPage, type: 'COMMENT', x, y, text: 'Good explanation' };
+      const note = window.prompt('Enter your note for the student:');
+      if (!note) return;
+      newAnn = { id: `ann_${Date.now()}`, pageNumber: currentPage, type: 'COMMENT', x, y, text: note };
     }
 
     handleAddAnnotation(newAnn);
@@ -106,18 +109,34 @@ export const CIEDigitalValuationStudio: React.FC<CIEDigitalValuationStudioProps>
   };
 
   // Submit evaluation
-  const handleSubmitValuation = () => {
-    const totalAwarded = script.questions.reduce((acc, q) => acc + (q.awardedMarks || 0), 0);
+  const handleSubmitValuation = async () => {
+    try {
+      const toastId = toast.loading('Submitting marks...');
+      let totalAwarded = 0;
+      for (const q of script.questions) {
+        if (q.isEvaluated && q.id) {
+          const res = await api.post('/cie/test/grade_answer/', {
+            answer_id: q.id,
+            marks_awarded: q.awardedMarks || 0,
+          });
+          totalAwarded = res.data.cie_marks_total || totalAwarded; // Using total from backend
+        }
+      }
 
-    const finalizedScript: CIEScannedScript = {
-      ...script,
-      status: 'EVALUATED',
-      evaluatorTotalMarks: totalAwarded,
-      evaluatedAt: new Date().toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }),
-    };
+      const finalizedScript: CIEScannedScript = {
+        ...script,
+        status: 'EVALUATED',
+        evaluatorTotalMarks: totalAwarded,
+        evaluatedAt: new Date().toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }),
+      };
 
-    onUpdateScript(finalizedScript);
-    onSubmitSuccess(totalAwarded, script.studentId, script.testType);
+      onUpdateScript(finalizedScript);
+      onSubmitSuccess(totalAwarded, script.studentId, script.testType);
+      toast.dismiss(toastId);
+    } catch (err) {
+      toast.error('Failed to submit valuation. Please check connection.');
+      console.error(err);
+    }
   };
 
   const totalEvaluatorMarks = script.questions.reduce((acc, q) => acc + (q.awardedMarks || 0), 0);
@@ -172,7 +191,7 @@ export const CIEDigitalValuationStudio: React.FC<CIEDigitalValuationStudioProps>
               </span>
             </div>
             <div style={{ fontSize: '0.75rem', color: '#64748B', marginTop: '2px' }}>
-              Digital Evaluation Studio • Total Marks: <strong>30M</strong> • Submitted: {script.submittedAt}
+              Digital Evaluation Studio • Total Marks: <strong>{script.maxMarks}M</strong> • Submitted: {script.submittedAt}
             </div>
           </div>
         </div>
@@ -363,7 +382,10 @@ export const CIEDigitalValuationStudio: React.FC<CIEDigitalValuationStudioProps>
               <button
                 type="button"
                 disabled={currentPage <= 1}
-                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                onClick={() => {
+                  setCurrentPage(p => Math.max(1, p - 1));
+                  setActiveQuestionIdx(p => Math.max(0, p - 1));
+                }}
                 style={{ background: '#334155', border: 'none', color: 'white', padding: '6px', borderRadius: '6px', cursor: currentPage <= 1 ? 'not-allowed' : 'pointer' }}
               >
                 <ChevronLeft size={14} />
@@ -374,7 +396,10 @@ export const CIEDigitalValuationStudio: React.FC<CIEDigitalValuationStudioProps>
               <button
                 type="button"
                 disabled={currentPage >= script.totalPages}
-                onClick={() => setCurrentPage(p => Math.min(script.totalPages, p + 1))}
+                onClick={() => {
+                  setCurrentPage(p => Math.min(script.totalPages, p + 1));
+                  setActiveQuestionIdx(p => Math.min(script.questions.length - 1, p + 1));
+                }}
                 style={{ background: '#334155', border: 'none', color: 'white', padding: '6px', borderRadius: '6px', cursor: currentPage >= script.totalPages ? 'not-allowed' : 'pointer' }}
               >
                 <ChevronRight size={14} />
@@ -425,87 +450,35 @@ export const CIEDigitalValuationStudio: React.FC<CIEDigitalValuationStudioProps>
                 <span>USN: {script.studentUSN} • PAGE {currentPage}</span>
               </div>
 
-              {/* Simulated Student Handwritten Answers based on page */}
-              {currentPage === 1 && (
+              {/* Student Answer based on page */}
+              {script.questions[currentPage - 1] && (
                 <div>
                   <div style={{ fontWeight: 800, color: '#1E293B', marginBottom: '8px', fontFamily: 'sans-serif' }}>
-                    Q1(a). Binary Search Time Complexity Analysis:
+                    Q{script.questions[currentPage - 1].questionNumber}. {script.questions[currentPage - 1].questionText}
                   </div>
-                  <p style={{ margin: '0 0 12px 0', fontSize: '0.92rem', color: '#1E293B', fontStyle: 'italic' }}>
-                    In Binary Search, the search space is halved at each comparison step:
-                    <br />
-                    T(n) = T(n/2) + c , where c is O(1) comparison cost.
-                    <br />
-                    Expanding the recurrence:
-                    <br />
-                    T(n) = T(n/4) + 2c = T(n/8) + 3c ... = T(n/2^k) + k·c
-                    <br />
-                    When n/2^k = 1 =&gt; 2^k = n =&gt; k = log₂(n)
-                    <br />
-                    Hence, Worst Case Time Complexity: <strong>T(n) = O(log₂ n)</strong>.
-                  </p>
-
-                  <div style={{ fontWeight: 800, color: '#1E293B', marginTop: '24px', marginBottom: '8px', fontFamily: 'sans-serif' }}>
-                    Q1(b). Circular Queue Array Implementation:
+                  <div style={{ margin: '0 0 12px 0', fontSize: '0.92rem', color: '#1E293B', fontStyle: 'italic', whiteSpace: 'pre-wrap', border: '1px solid #E2E8F0', padding: '16px', borderRadius: '8px', background: '#F8FAFC' }}>
+                    {script.questions[currentPage - 1].answerImageBase64 ? (
+                      <div>
+                        <div style={{ marginBottom: '10px', border: '1px dashed #CBD5E1', padding: '4px', borderRadius: '6px' }}>
+                          <img 
+                            src={`data:image/png;base64,${script.questions[currentPage - 1].answerImageBase64}`} 
+                            alt="Student Handwriting" 
+                            style={{ width: '100%', borderRadius: '4px' }} 
+                          />
+                        </div>
+                        {script.questions[currentPage - 1].extractedText && (
+                          <div style={{ background: '#FFFBEB', padding: '10px', borderRadius: '6px', border: '1px solid #FDE68A', fontSize: '0.85rem' }}>
+                            <strong>🤖 OCR Extracted Text:</strong>
+                            <p style={{ marginTop: '6px', marginBottom: 0, fontFamily: 'monospace' }}>
+                              {script.questions[currentPage - 1].extractedText}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      script.questions[currentPage - 1].answerText || 'No answer provided.'
+                    )}
                   </div>
-                  <p style={{ margin: '0 0 12px 0', fontSize: '0.9rem', fontStyle: 'italic' }}>
-                    A circular queue overcomes the memory wastage in a linear queue by wrapping around using modulo arithmetic:
-                    <br />
-                    Enqueue: <code>rear = (rear + 1) % MAX_SIZE</code>
-                    <br />
-                    Dequeue: <code>front = (front + 1) % MAX_SIZE</code>
-                    <br />
-                    Overflow Condition: <code>(rear + 1) % MAX_SIZE == front</code>
-                    <br />
-                    Underflow Condition: <code>front == -1 && rear == -1</code>
-                  </p>
-                </div>
-              )}
-
-              {currentPage === 2 && (
-                <div>
-                  <div style={{ fontWeight: 800, color: '#1E293B', marginBottom: '8px', fontFamily: 'sans-serif' }}>
-                    Q2(a). Max-Heap Construction for [12, 11, 13, 5, 6, 7]:
-                  </div>
-                  <p style={{ margin: '0 0 12px 0', fontSize: '0.9rem', fontStyle: 'italic' }}>
-                    1. Initial Complete Binary Tree Representation:
-                    <br />
-                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[12]
-                    <br />
-                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;/&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;\
-                    <br />
-                    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[11]&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;[13]
-                    <br />
-                    &nbsp;&nbsp;&nbsp;&nbsp;/&nbsp;&nbsp;&nbsp;&nbsp;\&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;/
-                    <br />
-                    &nbsp;&nbsp;[5]&nbsp;&nbsp;&nbsp;&nbsp;[6]&nbsp;&nbsp;&nbsp;[7]
-                    <br />
-                    <br />
-                    2. Bottom-up Heapify Starting at last non-leaf node:
-                    <br />
-                    - Check sub-tree at index 2 (value 13): already greater than child 7.
-                    <br />
-                    - Check sub-tree at index 1 (value 11): greater than 5 and 6.
-                    <br />
-                    - Check root at index 0 (value 12): swap with maximum child [13].
-                    <br />
-                    Final Array Representation: <strong>[13, 11, 12, 5, 6, 7]</strong>.
-                  </p>
-                </div>
-              )}
-
-              {currentPage >= 3 && (
-                <div>
-                  <div style={{ fontWeight: 800, color: '#1E293B', marginBottom: '8px', fontFamily: 'sans-serif' }}>
-                    Q2(b). Traversal Memory Trade-offs: BFS vs DFS:
-                  </div>
-                  <p style={{ margin: '0 0 12px 0', fontSize: '0.9rem', fontStyle: 'italic' }}>
-                    - BFS uses a FIFO Queue: Memory complexity is O(W) where W is max tree width. For a balanced binary tree, W ≈ O(n/2) = O(n).
-                    <br />
-                    - DFS uses an execution Call Stack: Memory complexity is O(H) where H is tree height. For balanced binary tree, H = O(log n).
-                    <br />
-                    Conclusion: DFS is significantly more memory-efficient on wide and balanced graphs.
-                  </p>
                 </div>
               )}
 
@@ -600,7 +573,10 @@ export const CIEDigitalValuationStudio: React.FC<CIEDigitalValuationStudioProps>
                 return (
                   <button
                     key={q.id}
-                    onClick={() => setActiveQuestionIdx(idx)}
+                    onClick={() => {
+                      setActiveQuestionIdx(idx);
+                      setCurrentPage(idx + 1);
+                    }}
                     style={{
                       flex: 1,
                       minWidth: '70px',
@@ -754,7 +730,10 @@ export const CIEDigitalValuationStudio: React.FC<CIEDigitalValuationStudioProps>
             <button
               type="button"
               disabled={activeQuestionIdx === 0}
-              onClick={() => setActiveQuestionIdx(i => Math.max(0, i - 1))}
+              onClick={() => {
+                setActiveQuestionIdx(i => Math.max(0, i - 1));
+                setCurrentPage(p => Math.max(1, p - 1));
+              }}
               style={{
                 padding: '8px 16px',
                 borderRadius: '8px',
@@ -770,7 +749,10 @@ export const CIEDigitalValuationStudio: React.FC<CIEDigitalValuationStudioProps>
             <button
               type="button"
               disabled={activeQuestionIdx >= script.questions.length - 1}
-              onClick={() => setActiveQuestionIdx(i => Math.min(script.questions.length - 1, i + 1))}
+              onClick={() => {
+                setActiveQuestionIdx(i => Math.min(script.questions.length - 1, i + 1));
+                setCurrentPage(p => Math.min(script.totalPages, p + 1));
+              }}
               style={{
                 padding: '8px 16px',
                 borderRadius: '8px',

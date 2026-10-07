@@ -1,13 +1,34 @@
 import { QuestionPaperSet, VaultSubject, SessionKeyData } from './types';
 
-export const INITIAL_SUBJECTS: VaultSubject[] = [];
+export const INITIAL_SUBJECTS: VaultSubject[] = [
+  {
+    code: 'MECH701',
+    title: 'Control Engineering',
+    department: 'Mechanical Engineering',
+    examDate: '2026-09-18',
+    examSlot: '09:00 AM - 12:00 PM',
+    setsAvailable: 0,
+    requiredSets: 3,
+    vaultStatus: 'LOCKED'
+  },
+  {
+    code: 'CS301',
+    title: 'Data Structures and Applications',
+    department: 'Computer Science',
+    examDate: '2026-09-20',
+    examSlot: '09:00 AM - 12:00 PM',
+    setsAvailable: 0,
+    requiredSets: 3,
+    vaultStatus: 'LOCKED'
+  }
+];
 
 export const INITIAL_PAPERS: QuestionPaperSet[] = [];
 
 export const MOCK_SESSION_KEYS: Record<string, SessionKeyData> = {
-  'CS201': {
-    keyId: 'KEY-2026-CS201-9981',
-    subjectCode: 'CS201',
+  'MECH701': {
+    keyId: 'KEY-2026-MECH701-9981',
+    subjectCode: 'MECH701',
     algorithm: 'AES-256-GCM + CRYSTALS-Dilithium3 Signature',
     generatedAt: '2026-08-31 11:20 IST',
     expiresAt: '2026-10-15 13:30 IST',

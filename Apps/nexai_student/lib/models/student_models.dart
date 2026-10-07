@@ -31,6 +31,7 @@ class ExamScheduleItem {
   final bool isCompleted;
   final String qrPayload;
   final String? questionPaperId;
+  final String? slotId;
 
   ExamScheduleItem({
     required this.courseCode,
@@ -43,6 +44,7 @@ class ExamScheduleItem {
     this.isCompleted = false,
     required this.qrPayload,
     this.questionPaperId,
+    this.slotId,
   });
 }
 
@@ -93,7 +95,10 @@ class ExamQuestionItem {
   final String type; // "MCQ", "CODE", "THEORY"
   final List<String>? options;
   String? candidateAnswer;
+  String? answerImageBase64;
   bool isAnswered;
+  int currentPageNumber;
+  int totalPages;
 
   ExamQuestionItem({
     required this.questionNumber,
@@ -102,7 +107,10 @@ class ExamQuestionItem {
     required this.type,
     this.options,
     this.candidateAnswer,
+    this.answerImageBase64,
     this.isAnswered = false,
+    this.currentPageNumber = 1,
+    this.totalPages = 1,
   });
 }
 

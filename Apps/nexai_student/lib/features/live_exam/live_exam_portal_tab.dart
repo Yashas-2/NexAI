@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../core/theme/app_theme.dart';
@@ -15,11 +16,23 @@ class LiveExamPortalTab extends StatefulWidget {
 class _LiveExamPortalTabState extends State<LiveExamPortalTab> {
   bool _isLoading = true;
   List<ExamScheduleItem> _exams = [];
+  Timer? _refreshTimer;
+  bool _isStartingExam = false;
 
   @override
   void initState() {
     super.initState();
     _fetchExams();
+    // Auto-refresh every 30 seconds to detect newly active exams
+    _refreshTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) _fetchExams();
+    });
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _fetchExams() async {
@@ -41,9 +54,29 @@ class _LiveExamPortalTabState extends State<LiveExamPortalTab> {
                 eligibilityStatus: 'ELIGIBLE',
                 qrPayload: slot['subject_code'] ?? '',
                 questionPaperId: slot['question_paper_id'],
+                slotId: slot['slot_id'],
               ));
             }
           }
+          
+          loadedExams.sort((a, b) {
+            DateTime? dateA, dateB;
+            try {
+              dateA = DateTime.parse('${a.examDate} ${a.timeSlot.split('-')[0].trim()}');
+            } catch (_) {
+              try { dateA = DateTime.parse(a.examDate); } catch (_) {}
+            }
+            try {
+              dateB = DateTime.parse('${b.examDate} ${b.timeSlot.split('-')[0].trim()}');
+            } catch (_) {
+              try { dateB = DateTime.parse(b.examDate); } catch (_) {}
+            }
+            
+            if (dateA != null && dateB != null) {
+              return dateA.compareTo(dateB);
+            }
+            return a.examDate.compareTo(b.examDate);
+          });
         }
         setState(() {
           _exams = loadedExams;
@@ -56,6 +89,28 @@ class _LiveExamPortalTabState extends State<LiveExamPortalTab> {
           _isLoading = false;
         });
       }
+    }
+  }
+
+  /// Parse time slot and check if the exam is currently active.
+  /// Returns true if current time is within [start - 15min, end].
+  bool _isExamActive(ExamScheduleItem exam, DateTime now) {
+    if (exam.examDate.isEmpty || exam.timeSlot.isEmpty) return false;
+    try {
+      final parts = exam.timeSlot.split('-');
+      if (parts.length != 2) return false;
+      final startParts = parts[0].trim().split(':');
+      final endParts = parts[1].trim().split(':');
+      if (startParts.length != 2 || endParts.length != 2) return false;
+      final date = DateTime.parse(exam.examDate);
+      final startDateTime = DateTime(date.year, date.month, date.day, int.parse(startParts[0]), int.parse(startParts[1]));
+      var endDateTime = DateTime(date.year, date.month, date.day, int.parse(endParts[0]), int.parse(endParts[1]));
+      if (endDateTime.isBefore(startDateTime)) {
+        endDateTime = endDateTime.add(const Duration(days: 1));
+      }
+      return now.isAfter(startDateTime.subtract(const Duration(minutes: 15))) && now.isBefore(endDateTime);
+    } catch (_) {
+      return false;
     }
   }
 
@@ -78,32 +133,13 @@ class _LiveExamPortalTabState extends State<LiveExamPortalTab> {
     }
 
     final now = DateTime.now();
-    ExamScheduleItem? activeExam;
+    // ALL exams that are currently active (time window open) get the Start button
+    List<ExamScheduleItem> activeExams = [];
     List<ExamScheduleItem> scheduledExams = [];
 
     for (var exam in _exams) {
-      bool isActive = false;
-      if (exam.examDate.isNotEmpty && exam.timeSlot.isNotEmpty) {
-        try {
-          final parts = exam.timeSlot.split('-');
-          if (parts.length == 2) {
-            final startParts = parts[0].trim().split(':');
-            final endParts = parts[1].trim().split(':');
-            if (startParts.length == 2 && endParts.length == 2) {
-              final date = DateTime.parse(exam.examDate);
-              final startDateTime = DateTime(date.year, date.month, date.day, int.parse(startParts[0]), int.parse(startParts[1]));
-              final endDateTime = DateTime(date.year, date.month, date.day, int.parse(endParts[0]), int.parse(endParts[1]));
-              
-              if (now.isAfter(startDateTime.subtract(const Duration(minutes: 15))) && now.isBefore(endDateTime)) {
-                isActive = true;
-              }
-            }
-          }
-        } catch (_) {}
-      }
-      
-      if (isActive && activeExam == null) {
-        activeExam = exam;
+      if (_isExamActive(exam, now)) {
+        activeExams.add(exam);
       } else {
         scheduledExams.add(exam);
       }
@@ -123,8 +159,11 @@ class _LiveExamPortalTabState extends State<LiveExamPortalTab> {
           ],
         ),
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.only(left: 16, right: 16, top: 16, bottom: 96),
+      body: RefreshIndicator(
+        onRefresh: _fetchExams,
+        child: SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.only(left: 16, right: 16, top: 16, bottom: 96),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -195,88 +234,20 @@ class _LiveExamPortalTabState extends State<LiveExamPortalTab> {
                   'Upcoming Degree Examinations (${_exams.length})',
                   style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 14),
                 ),
-                const Text('Fall 2026', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                Text(
+                  activeExams.isNotEmpty ? '${activeExams.length} LIVE' : 'Fall 2026',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: activeExams.isNotEmpty ? AppTheme.accentGreen : AppTheme.textSecondary,
+                    fontWeight: activeExams.isNotEmpty ? FontWeight.w800 : FontWeight.normal,
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 12),
 
-            // Card 1: Active Exam (Live Now)
-            if (activeExam != null)
-            Container(
-              padding: const EdgeInsets.all(18),
-              decoration: BoxDecoration(
-                color: AppTheme.bgSurface,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: AppTheme.primary, width: 1.8),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppTheme.primary.withValues(alpha: 0.12),
-                    blurRadius: 16,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFDCFCE7),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: const Row(
-                          children: [
-                            Icon(Icons.circle, color: AppTheme.accentGreen, size: 8),
-                            SizedBox(width: 4),
-                            Text('LIVE NOW • READY TO START', style: TextStyle(color: Color(0xFF166534), fontWeight: FontWeight.w900, fontSize: 10)),
-                          ],
-                        ),
-                      ),
-                      Text(activeExam.deskNumber, style: const TextStyle(fontWeight: FontWeight.w900, color: AppTheme.primaryDark, fontSize: 12)),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    '${activeExam.courseCode}: ${activeExam.courseTitle}',
-                    style: GoogleFonts.inter(fontWeight: FontWeight.w900, fontSize: 16),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '${activeExam.hallNumber} • ${activeExam.timeSlot}',
-                    style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
-                  ),
-                  const SizedBox(height: 16),
-                  const Divider(height: 1),
-                  const SizedBox(height: 16),
-
-                  // Start Exam Button
-                  SizedBox(
-                    width: double.infinity,
-                    height: 48,
-                    child: ElevatedButton.icon(
-                      onPressed: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => BiometricFaceVerificationScreen(exam: activeExam!),
-                          ),
-                        );
-                      },
-                      icon: const Icon(Icons.face, size: 18),
-                      label: const Text('Verify Face & Enter Proctor Mode 🔒', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppTheme.primary,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
+            // Active Exam Cards (ALL exams currently in their time window)
+            ...activeExams.map((exam) => _buildActiveExamCard(exam)),
 
             const SizedBox(height: 16),
 
@@ -329,6 +300,169 @@ class _LiveExamPortalTabState extends State<LiveExamPortalTab> {
           ],
         ),
       ),
+      ),
     );
+  }
+
+  Widget _buildActiveExamCard(ExamScheduleItem exam) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: AppTheme.bgSurface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppTheme.primary, width: 1.8),
+        boxShadow: [
+          BoxShadow(
+            color: AppTheme.primary.withValues(alpha: 0.12),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFDCFCE7),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.circle, color: AppTheme.accentGreen, size: 8),
+                    SizedBox(width: 4),
+                    Text('LIVE NOW • READY TO START', style: TextStyle(color: Color(0xFF166534), fontWeight: FontWeight.w900, fontSize: 10)),
+                  ],
+                ),
+              ),
+              Text(exam.deskNumber, style: const TextStyle(fontWeight: FontWeight.w900, color: AppTheme.primaryDark, fontSize: 12)),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            '${exam.courseCode}: ${exam.courseTitle}',
+            style: GoogleFonts.inter(fontWeight: FontWeight.w900, fontSize: 16),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${exam.hallNumber} • ${exam.timeSlot}',
+            style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+          ),
+          const SizedBox(height: 16),
+          const Divider(height: 1),
+          const SizedBox(height: 16),
+
+          // Start Exam Button
+          SizedBox(
+            width: double.infinity,
+            height: 48,
+            child: ElevatedButton.icon(
+              onPressed: _isStartingExam ? null : () => _startExam(exam),
+              icon: _isStartingExam 
+                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.face, size: 18),
+              label: Text(
+                _isStartingExam ? 'Checking Attendance...' : 'Verify Face & Enter Proctor Mode 🔒', 
+                style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13)
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.primary,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _startExam(ExamScheduleItem exam) async {
+    if (_isStartingExam) return;
+    if (exam.slotId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Error: slot_id is missing')));
+      return;
+    }
+    
+    setState(() {
+      _isStartingExam = true;
+    });
+
+    bool isDialogShowing = true;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        backgroundColor: AppTheme.bgSurface,
+        title: const Text('Checking Attendance', style: TextStyle(color: AppTheme.textPrimary)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: const [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text('Please wait for the invigilator to mark you as present...', style: TextStyle(color: AppTheme.textSecondary), textAlign: TextAlign.center),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              isDialogShowing = false;
+              if (mounted) setState(() => _isStartingExam = false);
+              Navigator.pop(context);
+            },
+            child: const Text('Cancel', style: TextStyle(color: AppTheme.primary)),
+          )
+        ],
+      ),
+    ).then((_) {
+      isDialogShowing = false;
+      if (mounted) setState(() => _isStartingExam = false);
+    });
+    
+    try {
+      bool isPresent = false;
+      for (int i = 0; i < 30; i++) {
+        if (!isDialogShowing) break;
+        final res = await ApiService.get('/student/portal/my_attendance/?slot_id=${exam.slotId}');
+        if (res['is_present'] == true) {
+          isPresent = true;
+          break;
+        }
+        await Future.delayed(const Duration(seconds: 2));
+      }
+      
+      if (!mounted) return;
+      
+      if (isDialogShowing) {
+        Navigator.pop(context);
+        isDialogShowing = false;
+      }
+      
+      if (isPresent) {
+        if (mounted) setState(() => _isStartingExam = false);
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => BiometricFaceVerificationScreen(exam: exam),
+          ),
+        );
+      } else if (!isPresent && isDialogShowing) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Invigilator has not marked you present yet. Please try again.')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      if (isDialogShowing) {
+        Navigator.pop(context);
+      }
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+    } finally {
+      if (mounted) setState(() => _isStartingExam = false);
+    }
   }
 }

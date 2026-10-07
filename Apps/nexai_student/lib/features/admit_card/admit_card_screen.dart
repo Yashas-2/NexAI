@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 import '../../core/theme/app_theme.dart';
 import '../../services/api_service.dart';
 
@@ -61,7 +64,7 @@ class _AdmitCardScreenState extends State<AdmitCardScreen> {
     final latestTicket = hallTickets.isNotEmpty ? hallTickets.first : null;
     final slots = latestTicket != null ? (latestTicket['slots'] as List? ?? latestTicket['schedule'] as List? ?? []) : [];
     final activeExam = slots.isNotEmpty ? slots.first : null;
-    final qrPayload = latestTicket != null ? (latestTicket['qr_code_data'] ?? latestTicket['qr_payload'] ?? '') : '';
+    final qrPayload = usn != 'N/A' ? usn : '';
     final sessionName = latestTicket != null ? (latestTicket['exam_session_name'] ?? '') : '';
     // is_cie is provided by backend; fall back to session name check
     final isCie = latestTicket != null
@@ -76,14 +79,7 @@ class _AdmitCardScreenState extends State<AdmitCardScreen> {
         title: const Text('Digital Hall Ticket'),
         actions: [
           IconButton(
-            onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  backgroundColor: AppTheme.primaryDark,
-                  content: Text('✓ Hall Ticket PDF downloaded to device storage'),
-                ),
-              );
-            },
+            onPressed: () => _downloadHallTicket(usn, fullName, program, semester, examTypeLabel, qrPayload, slots),
             icon: const Icon(Icons.download_rounded, color: AppTheme.primary),
             tooltip: 'Download PDF',
           ),
@@ -358,5 +354,77 @@ class _AdmitCardScreenState extends State<AdmitCardScreen> {
         ),
       ),
     );
+  }
+
+  Future<void> _downloadHallTicket(
+    String usn, 
+    String fullName, 
+    String program, 
+    String semester, 
+    String examTypeLabel, 
+    String qrPayload, 
+    List<dynamic> slots
+  ) async {
+    final pdf = pw.Document();
+
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.a4,
+        build: (pw.Context context) {
+          return pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Header(level: 0, child: pw.Text('NEXAI AUTONOMOUS UNIVERSITY')),
+              pw.Text(examTypeLabel, style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 18)),
+              pw.SizedBox(height: 20),
+              pw.Text('Name: $fullName', style: const pw.TextStyle(fontSize: 14)),
+              pw.Text('USN: $usn', style: const pw.TextStyle(fontSize: 14)),
+              pw.Text('Program: $program', style: const pw.TextStyle(fontSize: 14)),
+              pw.Text('Semester: $semester', style: const pw.TextStyle(fontSize: 14)),
+              pw.SizedBox(height: 30),
+              pw.Text('Scheduled Exams:', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 16)),
+              pw.SizedBox(height: 10),
+              ...slots.map((slot) => pw.Container(
+                margin: const pw.EdgeInsets.only(bottom: 10),
+                padding: const pw.EdgeInsets.all(10),
+                decoration: pw.BoxDecoration(
+                  border: pw.Border.all(color: PdfColors.grey400),
+                  borderRadius: const pw.BorderRadius.all(pw.Radius.circular(8))
+                ),
+                child: pw.Column(
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
+                  children: [
+                    pw.Text('Subject: ${slot['subject_code'] ?? ''}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
+                    pw.SizedBox(height: 5),
+                    pw.Text('Date: ${slot['date'] ?? slot['exam_date'] ?? ''}'),
+                    pw.Text('Time: ${slot['exam_time'] ?? ''}'),
+                    pw.Text('Room: ${slot['room_number'] ?? slot['room'] ?? ''}'),
+                    pw.Text('Seat: ${slot['desk_number'] ?? slot['seat'] ?? ''}'),
+                  ],
+                ),
+              )),
+              pw.SizedBox(height: 40),
+              pw.Center(
+                child: pw.Column(
+                  children: [
+                    if (qrPayload.isNotEmpty)
+                      pw.BarcodeWidget(
+                        data: qrPayload,
+                        barcode: pw.Barcode.qrCode(),
+                        width: 150,
+                        height: 150,
+                      ),
+                    pw.SizedBox(height: 10),
+                    pw.Text('Scan at Gate for Instant Biometric Verification', style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
+                  ]
+                )
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    await Printing.sharePdf(bytes: await pdf.save(), filename: 'HallTicket_$usn.pdf');
   }
 }

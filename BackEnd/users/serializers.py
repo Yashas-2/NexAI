@@ -55,7 +55,7 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = [
             "id", "email", "full_name", "phone", "employee_id",
-            "role", "department", "is_active", "created_at", "plain_password",
+            "role", "department", "is_active", "created_at", "plain_password", "historical_duties_count",
             "usn", "semester", "write_usn", "write_semester"
         ]
         read_only_fields = ["id", "created_at", "plain_password"]

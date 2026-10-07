@@ -18,14 +18,15 @@ export interface StudentGradeRecord {
   name: string;
   email: string;
   courseCode: string;
-  attendancePercent: number;
-  cie1: number; // conducted for 20, reduced to 10
-  cie2: number; // conducted for 20, reduced to 10
-  cie3: number; // conducted for 20, reduced to 10
-  labOrProject: number; // out of 20
+  attendancePercent: number | string;
+  cie1: number | string; // conducted for 20, reduced to 10
+  cie2: number | string; // conducted for 20, reduced to 10
+  cie3: number | string; // conducted for 20, reduced to 10
+  labOrProject: number | string; // out of 20
   totalCIE: number; // out of 50
   remarks?: string;
   isModified?: boolean;
+  saveStatus?: 'SYNCED' | 'UNSAVED' | 'SAVING' | 'FAILED';
 }
 
 export interface FacultyCIEQuestion {
@@ -97,6 +98,7 @@ export interface CIEScriptQuestionScore {
   awardedMarks: number;
   evaluatorRemarks?: string;
   isEvaluated?: boolean;
+  answerText?: string;
 }
 
 export interface CIEScannedScript {
@@ -109,7 +111,7 @@ export interface CIEScannedScript {
   testType: 'CIE-1' | 'CIE-2';
   submittedAt: string;
   totalPages: number;
-  status: 'PENDING_VALUATION' | 'EVALUATED';
+  status: 'PENDING_VALUATION' | 'EVALUATED' | 'NOT_SUBMITTED';
   maxMarks: number;
   evaluatorTotalMarks?: number;
   aiSuggestedMarks?: number;

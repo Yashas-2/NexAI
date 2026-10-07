@@ -46,7 +46,19 @@ export const AuthoringTab: React.FC<AuthoringTabProps> = ({
   const [isAddingQuestion, setIsAddingQuestion] = useState(false);
   const [selectedSectionForAdd, setSelectedSectionForAdd] = useState('Part A');
 
-  const currentDraft = subjectDrafts.find(d => d.setLabel === activeSetLabel) || subjectDrafts[0];
+  const currentDraft = subjectDrafts.find(d => d.setLabel === activeSetLabel) || subjectDrafts[0] || {
+    id: 'placeholder',
+    setLabel: 'Set A',
+    title: 'Loading...',
+    subjectCode: activeSubjectCode,
+    subjectTitle: 'Loading...',
+    examSession: 'Loading...',
+    maxMarks: 100,
+    questions: [],
+    totalMarks: 0,
+    status: 'DRAFT',
+    lastSavedAt: ''
+  };
 
   // Calculate live marks
   const totalCalculatedMarks = currentDraft?.questions.reduce((sum, q) => sum + q.marks, 0) || 0;
@@ -343,7 +355,7 @@ export const AuthoringTab: React.FC<AuthoringTabProps> = ({
             fontWeight: 800,
             fontSize: '1rem',
           }}>
-            {currentDraft.setLabel.split(' ')[1]}
+            {(currentDraft.setLabel || 'Set A').split(' ')[1]}
           </div>
 
           <div>
@@ -501,7 +513,7 @@ export const AuthoringTab: React.FC<AuthoringTabProps> = ({
                         flexShrink: 0,
                         marginTop: '2px'
                       }}>
-                        {q.number}
+                        {q.number}{q.part || ''}
                       </div>
 
                       {/* Question Content & Metadata */}

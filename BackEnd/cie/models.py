@@ -241,6 +241,11 @@ class CIEAttempt(models.Model):
     A student's digital attempt for a Continuous Internal Evaluation (CIE)
     via the Flutter app.
     """
+    class SubmissionStatus(models.TextChoices):
+        IN_PROGRESS = "IN_PROGRESS", "In Progress"
+        SUBMITTED = "SUBMITTED", "Submitted"
+        NOT_ATTENDED = "NOT_ATTENDED", "Not Attended"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     student = models.ForeignKey(
         "users.Student", on_delete=models.CASCADE, related_name="cie_attempts"
@@ -252,6 +257,11 @@ class CIEAttempt(models.Model):
     started_at = models.DateTimeField(auto_now_add=True)
     submitted_at = models.DateTimeField(null=True, blank=True)
     is_locked = models.BooleanField(default=False)
+    submission_status = models.CharField(
+        max_length=20,
+        choices=SubmissionStatus.choices,
+        default=SubmissionStatus.IN_PROGRESS,
+    )
 
     class Meta:
         db_table = "cie_attempt"
@@ -269,6 +279,8 @@ class CIEAnswer(models.Model):
     attempt = models.ForeignKey(CIEAttempt, on_delete=models.CASCADE, related_name="answers")
     question_text = models.CharField(max_length=500, blank=True, help_text="Stored since CIE might use a simple text-based paper")
     answer_text = models.TextField(blank=True)
+    answer_image_base64 = models.TextField(blank=True, help_text="JSON array of Base64 encoded images of the handwritten pages")
+    extracted_text = models.TextField(blank=True, help_text="Text extracted from the handwritten image via OCR")
     marks_awarded = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
 
     class Meta:

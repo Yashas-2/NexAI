@@ -222,7 +222,15 @@ export const AllocationWizard: React.FC<AllocationWizardProps> = ({
   const [facultyRoster, setFacultyRoster] = useState<FacultyInvigilator[]>([]);
 
   const handleScopeChange = (updated: Partial<SessionScopeConfig>) => {
-    setScopeConfig(prev => ({ ...prev, ...updated }));
+    setScopeConfig(prev => {
+      const next = { ...prev, ...updated };
+      if (createdSessionId) {
+        localStorage.setItem('nexai_scope_' + createdSessionId, JSON.stringify(next));
+      } else {
+        localStorage.setItem('nexai_scope_draft', JSON.stringify(next));
+      }
+      return next;
+    });
   };
 
   // Save selected subjects to the session when proceeding from Step 2 to Step 3
@@ -332,12 +340,25 @@ export const AllocationWizard: React.FC<AllocationWizardProps> = ({
           onNext={async () => {
             // Auto-generate timetable dates with 1-day gaps, skipping Sundays/Holidays
             const startDateStr = scopeConfig.firstExamDate || scopeConfig.startDate || new Date().toISOString().split('T')[0];
-            const generatedDates = generateTimetableDates(startDateStr, selectedSubjects.length);
             
-            const subjectsWithDates = selectedSubjects.map((subj, index) => ({
-              ...subj,
-              examDate: generatedDates[index]
-            }));
+            // Group subjects by department to ensure cross-department subjects happen on the SAME day
+            const deptGroups: Record<string, typeof selectedSubjects> = {};
+            selectedSubjects.forEach(s => {
+              if (!deptGroups[s.deptCode]) deptGroups[s.deptCode] = [];
+              deptGroups[s.deptCode].push(s);
+            });
+            
+            // Find max subjects any single department has to know how many dates we need
+            const maxExams = Math.max(...Object.values(deptGroups).map(g => g.length));
+            const generatedDates = generateTimetableDates(startDateStr, maxExams);
+            
+            const subjectsWithDates = selectedSubjects.map((subj) => {
+              const deptIdx = deptGroups[subj.deptCode].findIndex(s => s.code === subj.code);
+              return {
+                ...subj,
+                examDate: generatedDates[deptIdx]
+              };
+            });
             
             setSelectedSubjects(subjectsWithDates);
 

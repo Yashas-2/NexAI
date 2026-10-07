@@ -288,8 +288,11 @@ class _StudentDashboardTabState extends State<_StudentDashboardTab> {
           ),
         ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.only(left: 16, right: 16, top: 16, bottom: 96),
+      body: RefreshIndicator(
+        onRefresh: _fetchData,
+        child: SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.only(left: 16, right: 16, top: 16, bottom: 96),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -500,6 +503,7 @@ class _StudentDashboardTabState extends State<_StudentDashboardTab> {
             }),
           ],
         ),
+      ),
       ),
     );
   }

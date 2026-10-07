@@ -3,6 +3,7 @@ import { QuestionPaperDraft, SetterAssignment } from '../../types';
 import { Badge } from '@/components/ui/Badge';
 import { ShieldCheck, Lock, CheckCircle2, Cpu, AlertTriangle } from 'lucide-react';
 import { SubmissionReceiptModal } from './components/SubmissionReceiptModal';
+import { useAuthStore } from '@/store/authStore';
 
 interface SubmissionsTabProps {
   drafts: QuestionPaperDraft[];
@@ -21,6 +22,8 @@ export const SubmissionsTab: React.FC<SubmissionsTabProps> = ({
   const [signerPin, setSignerPin] = useState('7782-9910');
   const [isSigning, setIsSigning] = useState(false);
   const [viewingReceiptDraft, setViewingReceiptDraft] = useState<QuestionPaperDraft | null>(null);
+  const user = useAuthStore(s => s.user);
+  const authName = user?.full_name ? `${user.full_name} — Question Paper Setter` : 'Authenticated Examiner';
 
   const currentDraft = drafts.find(d => d.setLabel === selectedSetLabel) || drafts[0];
   const isMarksValid = currentDraft?.totalMarks === 100;
@@ -39,7 +42,7 @@ export const SubmissionsTab: React.FC<SubmissionsTabProps> = ({
         ...currentDraft,
         status: 'SIGNED_AND_VAULTED',
         digitalSignature: {
-          signedBy: 'Dr. Alan Turing (Setter #104)',
+          signedBy: user?.full_name || 'Authenticated Examiner',
           algorithm: 'CRYSTALS-Dilithium3 (Post-Quantum) + AES-256-GCM',
           signedAt: new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }) + ' IST',
           sha256Digest: hex,
@@ -183,7 +186,7 @@ export const SubmissionsTab: React.FC<SubmissionsTabProps> = ({
                 <input
                   type="text"
                   readOnly
-                  value="Dr. Alan Turing (Setter #104) — Dept of Computer Science"
+                  value={authName}
                   style={{ width: '100%', padding: '10px 12px', background: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: '8px', fontSize: '0.82rem', fontWeight: 600, color: '#334155', boxSizing: 'border-box' }}
                 />
               </div>

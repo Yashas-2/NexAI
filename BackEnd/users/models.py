@@ -48,6 +48,7 @@ class User(AbstractBaseUser, PermissionsMixin):
         default=UserRole.STUDENT,
         db_index=True,
     )
+    historical_duties_count = models.IntegerField(default=0)
 
     # ── Department link (for staff) ───────────────────────────────────────────
     department = models.ForeignKey(

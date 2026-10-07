@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../core/theme/app_theme.dart';
@@ -8,23 +9,52 @@ import '../scanner/booklet_scanner_modal.dart';
 import '../incident/report_incident_modal.dart';
 import '../handover/session_handover_modal.dart';
 
+import '../../repositories/invigilator_repository.dart';
+
 class InvigilatorHomeScreen extends StatefulWidget {
-  const InvigilatorHomeScreen({super.key});
+  final String? sessionKey;
+  
+  const InvigilatorHomeScreen({super.key, this.sessionKey});
 
   @override
   State<InvigilatorHomeScreen> createState() => _InvigilatorHomeScreenState();
 }
 
 class _InvigilatorHomeScreenState extends State<InvigilatorHomeScreen> with SingleTickerProviderStateMixin {
-  late InvigilatorSession _session;
+  final InvigilatorRepository _repository = InvigilatorRepository();
+  bool _isLoading = true;
+  String? _errorMessage;
   late TabController _tabController;
   String _searchQuery = '';
 
   @override
   void initState() {
     super.initState();
-    _session = MOCK_SESSION;
     _tabController = TabController(length: 3, vsync: this);
+    _loadSession();
+  }
+
+  Future<void> _loadSession() async {
+    if (widget.sessionKey == null) {
+      setState(() {
+        _session = MOCK_SESSION;
+        _isLoading = false;
+      });
+      return;
+    }
+
+    try {
+      final session = await _repository.activateSession(widget.sessionKey!);
+      setState(() {
+        _session = session;
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() {
+        _errorMessage = e.toString();
+        _isLoading = false;
+      });
+    }
   }
 
   @override
@@ -33,31 +63,54 @@ class _InvigilatorHomeScreenState extends State<InvigilatorHomeScreen> with Sing
     super.dispose();
   }
 
-  void _verifyStudent(String usn) {
-    setState(() {
-      final updatedStudents = _session.students.map((s) {
-        if (s.usn == usn) {
-          return s.copyWith(
-            isQrVerified: true,
-            isBiometricMatched: true,
-            status: StudentAttendanceStatus.present,
-          );
-        }
-        return s;
-      }).toList();
+  Future<void> _verifyStudent(String usn) async {
+    bool success = false;
+    String errorMessage = 'Failed to mark attendance.';
+    if (widget.sessionKey != null) {
+      try {
+        success = await _repository.markAttendance(widget.sessionKey!, usn);
+      } catch (e) {
+        success = false;
+        errorMessage = e.toString().replaceFirst('Exception: ', '');
+      }
+    }
 
-      _session = InvigilatorSession(
-        sessionId: _session.sessionId,
-        hallNumber: _session.hallNumber,
-        courseCode: _session.courseCode,
-        courseTitle: _session.courseTitle,
-        examDate: _session.examDate,
-        timeSlot: _session.timeSlot,
-        chiefInvigilatorName: _session.chiefInvigilatorName,
-        students: updatedStudents,
-        incidents: _session.incidents,
-      );
-    });
+    if (success) {
+      setState(() {
+        final updatedStudents = _session.students.map((s) {
+          if (s.usn == usn) {
+            return s.copyWith(
+              isQrVerified: true,
+              isBiometricMatched: true,
+              status: StudentAttendanceStatus.present,
+            );
+          }
+          return s;
+        }).toList();
+
+        _session = InvigilatorSession(
+          sessionId: _session.sessionId,
+          hallNumber: _session.hallNumber,
+          courseCode: _session.courseCode,
+          courseTitle: _session.courseTitle,
+          examDate: _session.examDate,
+          timeSlot: _session.timeSlot,
+          chiefInvigilatorName: _session.chiefInvigilatorName,
+          students: updatedStudents,
+          incidents: _session.incidents,
+        );
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Attendance marked successfully.')));
+      }
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(errorMessage),
+          backgroundColor: Colors.red,
+        ));
+      }
+    }
   }
 
   void _ingestBooklet(String usn, String barcode, String dummyBarcode, int digitizedPages) {
@@ -168,8 +221,75 @@ class _InvigilatorHomeScreenState extends State<InvigilatorHomeScreen> with Sing
     );
   }
 
+  late InvigilatorSession _session;
+
+  String _parseErrorMessage(String rawError) {
+    try {
+      if (rawError.contains('API Error')) {
+        final parts = rawError.split(' - ');
+        if (parts.length > 1) {
+          final jsonString = parts.sublist(1).join(' - ');
+          final decoded = jsonDecode(jsonString);
+          if (decoded is Map && decoded.containsKey('error')) {
+            return decoded['error'].toString();
+          }
+        }
+      }
+    } catch (_) {}
+    return rawError.replaceFirst('Exception: ', '');
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    if (_errorMessage != null) {
+      final displayMessage = _parseErrorMessage(_errorMessage!);
+      return Scaffold(
+        backgroundColor: AppTheme.bgBase,
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.lock_clock, size: 80, color: AppTheme.accentAmber),
+                const SizedBox(height: 24),
+                const Text(
+                  'Session Not Available',
+                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: AppTheme.textPrimary),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  displayMessage,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 16, color: AppTheme.textSecondary, height: 1.5),
+                ),
+                const SizedBox(height: 32),
+                ElevatedButton.icon(
+                  onPressed: () {
+                    setState(() {
+                      _isLoading = true;
+                      _errorMessage = null;
+                    });
+                    _loadSession();
+                  },
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Try Again'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.primary,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     return Scaffold(
       backgroundColor: AppTheme.bgBase,
       appBar: AppBar(
@@ -317,6 +437,8 @@ class _InvigilatorHomeScreenState extends State<InvigilatorHomeScreen> with Sing
           // Tabs Header
           TabBar(
             controller: _tabController,
+            isScrollable: true,
+            tabAlignment: TabAlignment.start,
             labelColor: AppTheme.primaryDark,
             unselectedLabelColor: AppTheme.textSecondary,
             indicatorColor: AppTheme.primary,
@@ -392,9 +514,9 @@ class _InvigilatorHomeScreenState extends State<InvigilatorHomeScreen> with Sing
 
           Expanded(
             child: GridView.builder(
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                childAspectRatio: 1.5,
+              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                maxCrossAxisExtent: 220,
+                childAspectRatio: 1.45,
                 crossAxisSpacing: 12,
                 mainAxisSpacing: 12,
               ),
@@ -449,10 +571,15 @@ class _InvigilatorHomeScreenState extends State<InvigilatorHomeScreen> with Sing
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Text(
-                              student.deskId,
-                              style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 13),
+                            Flexible(
+                              child: Text(
+                                student.deskId,
+                                style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 13),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             ),
+                            const SizedBox(width: 4),
                             Container(
                               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                               decoration: BoxDecoration(
@@ -477,6 +604,8 @@ class _InvigilatorHomeScreenState extends State<InvigilatorHomeScreen> with Sing
                             ),
                             Text(
                               student.usn,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                               style: const TextStyle(color: AppTheme.textSecondary, fontSize: 10),
                             ),
                           ],

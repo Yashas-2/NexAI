@@ -12,6 +12,8 @@ import {
 
 import { SetterAssignment, QuestionPaperDraft, QuestionItem } from './types';
 import { INITIAL_ASSIGNMENTS, INITIAL_DRAFTS } from './mockData';
+import { api } from '@/services/api';
+import { useEffect } from 'react';
 import { AssignmentsTab } from './features/assignments/AssignmentsTab';
 import { AuthoringTab } from './features/authoring/AuthoringTab';
 import { AICopilotTab } from './features/aiCopilot/AICopilotTab';
@@ -26,12 +28,79 @@ export default function SetterWorkspace() {
 
   // State
   const [activeTab, setActiveTab] = useState<SetterTab>('ASSIGNMENTS');
-  const [assignments, setAssignments] = useState<SetterAssignment[]>(INITIAL_ASSIGNMENTS);
-  const [drafts, setDrafts] = useState<QuestionPaperDraft[]>(INITIAL_DRAFTS);
-  const [activeSubjectCode, setActiveSubjectCode] = useState<string>('CS201');
+  const [assignments, setAssignments] = useState<SetterAssignment[]>([]);
+  const [drafts, setDrafts] = useState<QuestionPaperDraft[]>([]);
+  const [activeSubjectCode, setActiveSubjectCode] = useState<string>('');
+
+  useEffect(() => {
+    const fetchAssignments = async () => {
+      try {
+        const res = await api.get('/vault/question-papers/');
+        const realPapers = res.data.results || res.data;
+        if (realPapers && realPapers.length > 0) {
+          const mappedAssignments: SetterAssignment[] = realPapers.map((p: any) => ({
+            id: p.id,
+            subjectCode: p.subject_code,
+            subjectTitle: p.title,
+            examDate: '2026-09-18', // Placeholder from DB slot
+            sessionTime: '09:00 AM - 12:00 PM',
+            setsRequired: 3,
+            setsSubmitted: p.status === 'SIGNED_AND_VAULTED' ? 1 : 0,
+            deadline: '2026-09-01T23:59:00Z',
+            status: p.status === 'DRAFT' ? 'PENDING' : p.status,
+            department: 'Computer Science',
+            durationMinutes: p.duration_mins || 180,
+            honorariumAmount: '4,500',
+            guidelinesAcknowledged: true,
+            syllabusModules: []
+          }));
+          
+          const mappedDrafts: QuestionPaperDraft[] = realPapers.map((p: any, index: number) => ({
+              id: p.id,
+              assignmentId: p.id,
+              subjectCode: p.subject_code,
+              subjectTitle: p.title ? p.title.replace(' Official Paper', '') : 'Unknown Subject',
+              examSession: p.exam_session_name || 'Fall 2026',
+              setLabel: (['Set A', 'Set B', 'Set C', 'Set D'][index % 4]) as any,
+              maxMarks: p.total_marks || 100,
+              questions: (p.questions || []).map((q: any) => ({
+                id: q.id,
+                number: q.question_number,
+                part: q.part,
+                section: q.section,
+                text: q.text_content,
+                marks: q.marks,
+                bloomsLevel: q.bloom_level === 'REMEMBER' ? 'Remember' :
+                             q.bloom_level === 'UNDERSTAND' ? 'Understand' :
+                             q.bloom_level === 'APPLY' ? 'Apply' :
+                             q.bloom_level === 'ANALYZE' ? 'Analyze' :
+                             q.bloom_level === 'EVALUATE' ? 'Evaluate' : 'Create',
+                coMapping: q.co_tag || 'CO1',
+                module: 1, // Add to DB later
+                hasOrChoice: q.is_optional || false
+              })),
+              totalMarks: p.total_marks || 100,
+              status: 'DRAFT',
+              lastSavedAt: p.updated_at,
+              semester: '5th Semester',
+              durationMinutes: p.duration_mins || 180,
+              aiQualityScore: 94,
+              similarityScore: 2.4
+            }));
+          
+          setAssignments(mappedAssignments);
+          setDrafts(mappedDrafts);
+          setActiveSubjectCode(mappedAssignments[0].subjectCode);
+        }
+      } catch (e) {
+        console.error("Failed to load real assignments", e);
+      }
+    };
+    fetchAssignments();
+  }, []);
 
   // Active Assignment & Active Draft
-  const activeAssignment = assignments.find(a => a.subjectCode === activeSubjectCode) || assignments[0];
+  const activeAssignment = assignments.find(a => a.subjectCode === activeSubjectCode) || assignments[0] || { subjectTitle: 'Loading...' };
   const activeDraft = drafts.find(d => d.subjectCode === activeSubjectCode) || drafts[0];
 
   // Handler: Update Draft
@@ -45,6 +114,17 @@ export default function SetterWorkspace() {
       }
       return [...prev, updatedDraft];
     });
+
+    // SYNC to backend API immediately
+    if (updatedDraft.assignmentId && String(updatedDraft.assignmentId).length > 2) {
+      api.post(`/vault/question-papers/${updatedDraft.assignmentId}/sync_questions/`, {
+        questions: updatedDraft.questions
+      }).then(res => {
+        console.log("Draft saved successfully to backend", res.data);
+      }).catch(err => {
+        console.error("Failed to sync draft to backend", err);
+      });
+    }
 
     // Update assignment submission count if signed
     if (updatedDraft.status === 'SIGNED_AND_VAULTED') {
@@ -298,7 +378,7 @@ export default function SetterWorkspace() {
             />
           )}
 
-          {activeTab === 'SUBMISSIONS' && (
+          {activeTab === 'SUBMISSIONS' && activeDraft && (
             <SubmissionsTab
               drafts={drafts.filter(d => d.subjectCode === activeSubjectCode)}
               assignment={activeAssignment}

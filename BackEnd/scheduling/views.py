@@ -908,6 +908,10 @@ class AllocationSaveView(generics.GenericAPIView):
                 except UserModel.DoesNotExist:
                     errors.append(f"Reliever invigilator {reliever_email} not found")
 
+        if not errors:
+            exam_session.status = ExamSession.SessionStatus.SCHEDULED
+            exam_session.save()
+
         return Response({
             "created_slots": created_slots,
             "created_duties": created_duties,

@@ -48,7 +48,7 @@ export const HODOverviewTab: React.FC<HODOverviewTabProps> = ({
           {
             label: 'Attendance Eligible',
             value: `${totalStudents > 0 ? Math.round((eligibleStudents / totalStudents) * 100) : 0}% Eligible`,
-            desc: `${students.filter(s => s.status === 'DETAINED').length} Students Detained (<75%)`,
+            desc: `${students.filter(s => s.status === 'DETAINED').length} Students Detained (<85%)`,
             icon: <CheckCircle2 size={20} />,
             color: '#10b981',
           },
@@ -213,7 +213,7 @@ export const HODOverviewTab: React.FC<HODOverviewTabProps> = ({
                   <strong style={{ color: 'var(--color-text-primary)' }}>{c.enrolled} Students</strong>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span>Eligible (≥75% Attendance):</span>
+                  <span>Eligible (≥85% Attendance):</span>
                   <strong style={{ color: '#16a34a' }}>{c.eligible} Students</strong>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}>

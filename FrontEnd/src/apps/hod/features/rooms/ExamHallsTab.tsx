@@ -48,6 +48,9 @@ export const ExamHallsTab: React.FC<Props> = ({ halls, onUpdateHalls }) => {
         name: roomNumber.trim(),
         building: blockName.trim(),
         floor: 0,
+        rows_count: rowsCount,
+        cols_count: colsCount,
+        bench_style: benchType,
         total_capacity: rowsCount * colsCount,
         exam_capacity: rowsCount * colsCount,
         has_cctv: isCCTVEnabled,
@@ -59,11 +62,11 @@ export const ExamHallsTab: React.FC<Props> = ({ halls, onUpdateHalls }) => {
       const newHall: ExamHall = {
         id: saved.id,
         roomNumber: saved.name,
-        blockName: `${saved.building}`,
-        rowsCount: Number(rowsCount),
-        colsCount: Number(colsCount),
+        blockName: `${saved.building} - Floor ${saved.floor ?? 0}`,
+        rowsCount: saved.rows_count || rowsCount,
+        colsCount: saved.cols_count || colsCount,
         capacity: saved.exam_capacity,
-        benchType: benchType,
+        benchType: (saved.bench_style || benchType) as 'SINGLE_SEATER' | 'DOUBLE_SEATER',
         isCCTVEnabled: saved.has_cctv,
         isAC: saved.has_wifi,
         status: 'ACTIVE',
@@ -75,7 +78,15 @@ export const ExamHallsTab: React.FC<Props> = ({ halls, onUpdateHalls }) => {
       setIsModalOpen(false);
       setRoomNumber('');
     } catch (err: any) {
-      toast.error(err.response?.data?.error || 'Failed to register room');
+      // Show backend validation errors properly
+      const data = err.response?.data;
+      if (data) {
+        const firstField = Object.keys(data)[0];
+        const msg = Array.isArray(data[firstField]) ? data[firstField][0] : data[firstField];
+        toast.error(msg || 'Failed to register room');
+      } else {
+        toast.error('Failed to register room');
+      }
     }
   };
 
@@ -111,14 +122,16 @@ export const ExamHallsTab: React.FC<Props> = ({ halls, onUpdateHalls }) => {
   const openEditModal = (hall: ExamHall) => {
     setEditingHall(hall);
     setRoomNumber(hall.roomNumber);
-    setBlockName(hall.blockName);
-    setRowsCount(hall.rowsCount);
-    setColsCount(hall.colsCount);
-    setBenchType(hall.benchType);
+    // Strip trailing "- Floor X" from the display blockName before editing
+    setBlockName(hall.blockName.replace(/\s*-\s*Floor\s+\d+$/i, '').trim());
+    setRowsCount(hall.rowsCount || 6);
+    setColsCount(hall.colsCount || 6);
+    setBenchType(hall.benchType || 'SINGLE_SEATER');
     setIsCCTVEnabled(hall.isCCTVEnabled);
     setIsAC(hall.isAC);
     setIsEditModalOpen(true);
   };
+
 
   const handleUpdateHall = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -127,6 +140,9 @@ export const ExamHallsTab: React.FC<Props> = ({ halls, onUpdateHalls }) => {
       const res = await api.patch(`/scheduling/rooms/${editingHall.id}/`, {
         name: roomNumber.trim(),
         building: blockName.trim(),
+        rows_count: rowsCount,
+        cols_count: colsCount,
+        bench_style: benchType,
         total_capacity: rowsCount * colsCount,
         exam_capacity: rowsCount * colsCount,
         has_cctv: isCCTVEnabled,
@@ -138,11 +154,11 @@ export const ExamHallsTab: React.FC<Props> = ({ halls, onUpdateHalls }) => {
           return {
             ...h,
             roomNumber: saved.name,
-            blockName: saved.building,
-            rowsCount,
-            colsCount,
+            blockName: `${saved.building} - Floor ${saved.floor ?? 0}`,
+            rowsCount: saved.rows_count || rowsCount,
+            colsCount: saved.cols_count || colsCount,
             capacity: saved.exam_capacity,
-            benchType,
+            benchType: (saved.bench_style || benchType) as 'SINGLE_SEATER' | 'DOUBLE_SEATER',
             isCCTVEnabled: saved.has_cctv,
             isAC: saved.has_wifi,
           };
@@ -154,7 +170,14 @@ export const ExamHallsTab: React.FC<Props> = ({ halls, onUpdateHalls }) => {
       setIsEditModalOpen(false);
       setEditingHall(null);
     } catch (err: any) {
-      toast.error(err.response?.data?.error || 'Failed to update room');
+      const data = err.response?.data;
+      if (data) {
+        const firstField = Object.keys(data)[0];
+        const msg = Array.isArray(data[firstField]) ? data[firstField][0] : data[firstField];
+        toast.error(msg || 'Failed to update room');
+      } else {
+        toast.error('Failed to update room');
+      }
     }
   };
 

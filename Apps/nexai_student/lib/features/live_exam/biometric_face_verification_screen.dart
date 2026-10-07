@@ -300,9 +300,9 @@ class _BiometricFaceVerificationScreenState extends State<BiometricFaceVerificat
                 children: [
                   _buildCheckStep('1. Frontal Pose & Centering', _verificationStep >= 1),
                   const SizedBox(height: 10),
-                  _buildCheckStep('2. 3D Liveness & Anti-Spoof Test', _verificationStep >= 2),
-                  const SizedBox(height: 10),
-                  _buildCheckStep('3. Admission Record Cryptographic Match (1NX22CS001)', _verificationStep >= 3),
+                  _buildCheckStep('2. Passive Liveness & Anti-Spoof', _verificationStep >= 2),
+                  const SizedBox(height: 12),
+                  _buildCheckStep('3. Admission Record Cryptographic Match', _verificationStep >= 3),
                 ],
               ),
             ),

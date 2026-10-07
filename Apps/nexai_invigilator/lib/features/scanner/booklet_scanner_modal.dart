@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../core/theme/app_theme.dart';
 import '../../models/exam_models.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 
 class BookletScannerModal extends StatefulWidget {
   final List<StudentDeskItem> presentStudentsWithoutBooklet;
@@ -108,7 +109,12 @@ class _BookletScannerModalState extends State<BookletScannerModal> {
 
           Expanded(
             child: SingleChildScrollView(
-              padding: const EdgeInsets.all(20),
+              padding: EdgeInsets.only(
+                left: 20,
+                right: 20,
+                top: 20,
+                bottom: 20 + MediaQuery.of(context).viewInsets.bottom,
+              ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -174,7 +180,27 @@ class _BookletScannerModalState extends State<BookletScannerModal> {
                     child: Stack(
                       alignment: Alignment.center,
                       children: [
-                        const Icon(Icons.qr_code_2, size: 80, color: Colors.white24),
+                        Positioned.fill(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(16),
+                            child: MobileScanner(
+                              controller: MobileScannerController(
+                                detectionSpeed: DetectionSpeed.noDuplicates,
+                              ),
+                              onDetect: (capture) {
+                                final List<Barcode> barcodes = capture.barcodes;
+                                for (final barcode in barcodes) {
+                                  final String? val = barcode.rawValue;
+                                  if (val != null) {
+                                    setState(() {
+                                      _barcodeController.text = val;
+                                    });
+                                  }
+                                }
+                              },
+                            ),
+                          ),
+                        ),
                         Container(
                           width: 220,
                           height: 80,

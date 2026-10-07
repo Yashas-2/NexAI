@@ -234,7 +234,7 @@ export const BatchGenerateModal: React.FC<BatchGenerateModalProps> = ({
             <ShieldCheck size={18} />
             <span>
               <strong>Gate Rule for SEE Final Examination:</strong>{' '}
-              Requires minimum 75% Attendance (or approved condonation waiver), cleared fee dues, AND minimum 20/50 (40%) CIE Score.
+              Requires minimum 85% Attendance (or approved condonation waiver), cleared fee dues, AND minimum 12/30 (40%) or 20/50 (40%) CIE Score.
             </span>
           </div>
 

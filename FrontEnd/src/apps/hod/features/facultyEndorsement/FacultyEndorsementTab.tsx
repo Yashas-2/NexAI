@@ -70,44 +70,9 @@ export const FacultyEndorsementTab: React.FC = () => {
   const fetchPapers = async () => {
     try {
       setLoadingPapers(true);
-      // Try API first
-      let apiPapers: any[] = [];
-      try {
-        const res = await api.get('/cie/scrutiny/');
-        apiPapers = res.data.results || res.data;
-      } catch (e) {
-        console.warn('API fetch for scrutiny failed, falling back to local storage.');
-      }
-
-      // Read from localStorage (Faculty Dashboard saves here)
-      const savedPapers = localStorage.getItem('nexai_cie_papers_v2');
-      let localPapers: CIEQuestionPaperScrutiny[] = [];
-      if (savedPapers) {
-        const parsed = JSON.parse(savedPapers);
-        // Map FacultyCIEPaper to CIEQuestionPaperScrutiny
-        localPapers = parsed
-          .filter((p: any) => p.status !== 'DRAFT') // Only show submitted papers
-          .map((p: any) => ({
-            id: p.id,
-            subject_code: p.courseCode,
-            cie_number: p.testType.replace('-', '_'), // 'CIE-1' -> 'CIE_1'
-            paper_title: p.courseTitle,
-            paper_content: p.questions.map((q: any) => `${q.qNumber}) [${q.marks}M] [${q.co}] [${q.bloomsLevel}]\n${q.text}`).join('\n\n'),
-            answer_key: p.questions.map((q: any) => `${q.qNumber}) ${q.answer}`).join('\n\n'),
-            submitted_by_name: p.facultyName || 'Faculty Member',
-            submitted_at: p.submittedAt || new Date().toISOString(),
-            status: p.status === 'SUBMITTED_TO_HOD' ? 'PENDING' : p.status,
-            reviewed_by_name: '',
-            reviewed_at: '',
-            review_note: p.hodRemarks || '',
-          }));
-      }
-
-      // Merge API and local papers (avoiding duplicates if they share the same ID)
-      const merged = [...apiPapers, ...localPapers];
-      const uniquePapers = Array.from(new Map(merged.map(item => [item.id, item])).values());
-      
-      setPapers(uniquePapers);
+      const res = await api.get('/cie/scrutiny/');
+      const papers = res.data.results || res.data;
+      setPapers(papers);
     } catch (err: any) {
       toast.error('Failed to load scrutiny papers');
     } finally {
@@ -150,6 +115,18 @@ export const FacultyEndorsementTab: React.FC = () => {
     }
   }, [activeSubTab]);
 
+  // Refresh data when tab becomes visible (catches mid-session deletions)
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        if (activeSubTab === 'SCRUTINY') fetchPapers();
+        if (activeSubTab === 'CONFIGS') fetchConfigs();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [activeSubTab]);
+
   const openInspection = (paper: CIEQuestionPaperScrutiny) => {
     setInspectingPaper(paper);
     setRemarksText(paper.review_note || '');
@@ -166,36 +143,9 @@ export const FacultyEndorsementTab: React.FC = () => {
 
     setIsSubmitting(true);
     try {
-      try {
-        await api.post(`/cie/scrutiny/${inspectingPaper.id}/${action}/`, {
-          note: remarksText.trim()
-        });
-      } catch (e: any) {
-        console.warn('API update failed, updating localStorage fallback');
-        const savedPapers = localStorage.getItem('nexai_cie_papers_v2');
-        if (savedPapers) {
-          let parsed = JSON.parse(savedPapers);
-          const newStatus = action === 'approve' ? 'APPROVED' : 'REVISION_REQUESTED';
-          parsed = parsed.map((p: any) => {
-            if (p.id === inspectingPaper.id) {
-              return { 
-                ...p, 
-                status: newStatus, 
-                hodRemarks: remarksText.trim(),
-                // If it's a mocked paper from localStorage, the question structures are arrays.
-                // We'll save the edited text block directly to a new field so the UI can show it if needed.
-                hodEditedContent: editedPaperContent,
-                hodEditedAnswer: editedAnswerKey
-              };
-            }
-            return p;
-          });
-          localStorage.setItem('nexai_cie_papers_v2', JSON.stringify(parsed));
-          window.dispatchEvent(new Event('nexai_cie_papers_v2_updated'));
-        } else {
-          throw e; // rethrow if it wasn't local either
-        }
-      }
+      await api.post(`/cie/scrutiny/${inspectingPaper.id}/${action}/`, {
+        note: remarksText.trim()
+      });
       toast.success(`Paper successfully ${action}d`);
       fetchPapers();
       setInspectingPaper(null);

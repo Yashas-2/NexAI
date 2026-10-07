@@ -24,6 +24,7 @@ class StudentEligibilityViewSet(viewsets.ModelViewSet):
     """
     serializer_class = StudentEligibilitySerializer
     permission_classes = [IsAuthenticated]
+    pagination_class = None
 
     def get_queryset(self):
         user = self.request.user
@@ -37,6 +38,13 @@ class StudentEligibilityViewSet(viewsets.ModelViewSet):
         session_id = self.request.query_params.get('session_id')
         if session_id:
             qs = qs.filter(exam_session_id=session_id)
+        # Always deduplicate: keep only the latest record per student+subject
+        from django.db.models import Subquery, OuterRef
+        latest = StudentEligibility.objects.filter(
+            student=OuterRef('student'),
+            subject=OuterRef('subject'),
+        ).order_by('-created_at').values('id')[:1]
+        qs = qs.filter(id__in=Subquery(latest))
         return qs
 
     def _calculate_eligibility(self, serializer):
@@ -51,35 +59,33 @@ class StudentEligibilityViewSet(viewsets.ModelViewSet):
         elif attendance is None:
             attendance = Decimal('0')
 
-        cie1 = serializer.validated_data.get('cie1_marks')
-        if cie1 is None and instance:
-            cie1 = instance.cie1_marks
-        cie1 = cie1 or Decimal('0')
+        # Preserve null vs 0: null = not entered (skip), 0 = explicitly awarded zero (count)
+        def get_mark(field):
+            val = serializer.validated_data.get(field)
+            if val is None and instance:
+                val = getattr(instance, field)
+            return val
 
-        cie2 = serializer.validated_data.get('cie2_marks')
-        if cie2 is None and instance:
-            cie2 = instance.cie2_marks
-        cie2 = cie2 or Decimal('0')
+        cie1 = get_mark('cie1_marks')
+        cie2 = get_mark('cie2_marks')
+        cie3 = get_mark('cie3_marks')
+        assignment = get_mark('assignment_marks')
 
-        cie3 = serializer.validated_data.get('cie3_marks')
-        if cie3 is None and instance:
-            cie3 = instance.cie3_marks
-        cie3 = cie3 or Decimal('0')
+        # Sum only non-null marks (null = not yet entered, 0 = explicitly awarded)
+        marks = [m for m in [cie1, cie2, cie3, assignment] if m is not None]
+        calculated_cie = sum(marks, Decimal('0'))
+        calculated_cie = round(calculated_cie, 2)
 
-        assignment = serializer.validated_data.get('assignment_marks')
-        if assignment is None and instance:
-            assignment = instance.assignment_marks
-        assignment = assignment or Decimal('0')
-
-        # Average of 3 CIEs plus Assignment
-        calculated_cie = ((cie1 + cie2 + cie3) / Decimal('3')) + assignment
+        # Eligibility: attendance >= 85%, CIE >= 12/30 (no lab) or >= 20/50 (with lab)
+        has_lab = assignment is not None
+        cie_threshold = Decimal('20.00') if has_lab else Decimal('12.00')
 
         is_eligible = True
         remarks = []
-        if attendance < Decimal("75.00"):
+        if attendance < Decimal("85.00"):
             is_eligible = False
             remarks.append(f"Shortage of attendance ({attendance}%)")
-        if calculated_cie < Decimal("40.00"):
+        if calculated_cie < cie_threshold:
             is_eligible = False
             remarks.append(f"Low CIE marks ({calculated_cie:.2f})")
         serializer.save(
@@ -197,20 +203,23 @@ class GenerateEligibilityView(views.APIView):
         updated_sessions = set()
 
         for record in records:
-            cie1 = record.cie1_marks or Decimal('0')
-            cie2 = record.cie2_marks or Decimal('0')
-            cie3 = record.cie3_marks or Decimal('0')
-            assignment = record.assignment_marks or Decimal('0')
+            # Sum only non-null marks (null = not entered, 0 = explicitly awarded)
+            marks = [m for m in [record.cie1_marks, record.cie2_marks, record.cie3_marks, record.assignment_marks] if m is not None]
+            calculated_cie = sum(marks, Decimal('0'))
+            calculated_cie = round(calculated_cie, 2)
+
             attendance = record.attendance_percentage or Decimal('0')
 
-            calculated_cie = ((cie1 + cie2 + cie3) / Decimal('3')) + assignment
+            # Eligibility: attendance >= 85%, CIE >= 12/30 (no lab) or >= 20/50 (with lab)
+            has_lab = record.assignment_marks is not None
+            cie_threshold = Decimal('20.00') if has_lab else Decimal('12.00')
 
             is_eligible = True
             remarks = []
-            if attendance < Decimal("75.00"):
+            if attendance < Decimal("85.00"):
                 is_eligible = False
                 remarks.append(f"Shortage of attendance ({attendance}%)")
-            if calculated_cie < Decimal("40.00"):
+            if calculated_cie < cie_threshold:
                 is_eligible = False
                 remarks.append(f"Low CIE marks ({calculated_cie:.2f})")
 
@@ -254,3 +263,135 @@ class GenerateEligibilityView(views.APIView):
             "message": f"Successfully computed eligibility for {updated_count} records.",
             "updated_count": updated_count
         }, status=status.HTTP_200_OK)
+
+
+class FacultyMarksSyncView(views.APIView):
+    """
+    Accepts bulk CIE marks and attendance from Faculty Dashboard and updates StudentEligibility records.
+    Uses bulk operations for performance.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        subject_code = request.data.get("subject_code")
+        students_data = request.data.get("students", [])
+
+        if not subject_code or not students_data:
+            return Response({"error": "subject_code and students array are required."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        from scheduling.models import Subject, ExamSession
+        from users.models import Student
+
+        try:
+            subject = Subject.objects.get(code=subject_code)
+        except Subject.DoesNotExist:
+            return Response({"error": f"Subject {subject_code} not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        exam_session_id = request.data.get("exam_session_id")
+        if exam_session_id:
+            try:
+                session = ExamSession.objects.get(pk=exam_session_id)
+            except ExamSession.DoesNotExist:
+                return Response({"error": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            session = ExamSession.objects.filter(status__in=['ACTIVE', 'SCHEDULED', 'DRAFT']).order_by('-created_at').first()
+            if not session:
+                return Response({"error": "No active exam session found."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Always sync to the CIE session for this subject, not the SEE session
+        cie_session = ExamSession.objects.filter(
+            session_type='CIE',
+            status__in=['ACTIVE', 'SCHEDULED', 'DRAFT']
+        ).order_by('-created_at').first()
+        if cie_session:
+            session = cie_session
+
+        def parse_decimal(val):
+            if val is None or val == '': return None
+            return Decimal(str(val))
+
+        # Collect all USNs, batch-fetch students and existing records
+        usns = [s_data.get("usn") for s_data in students_data if s_data.get("usn")]
+        students_map = {s.usn: s for s in Student.objects.filter(usn__in=usns)}
+        existing_records = {
+            (r.student_id, r.subject_id): r
+            for r in StudentEligibility.objects.filter(
+                student__usn__in=usns, subject=subject, exam_session=session
+            ).select_related('student')
+        }
+        student_id_map = {s.usn: s.id for s in students_map.values()}
+
+        records_to_create = []
+        records_to_update = []
+        updated_count = 0
+
+        for s_data in students_data:
+            usn = s_data.get("usn")
+            if not usn or usn not in students_map:
+                continue
+
+            student = students_map[usn]
+            student_id = student.id
+            key = (student_id, subject.id)
+            record = existing_records.get(key)
+
+            cie1 = parse_decimal(s_data.get("cie1"))
+            cie2 = parse_decimal(s_data.get("cie2"))
+            cie3 = parse_decimal(s_data.get("cie3"))
+            assignment = parse_decimal(s_data.get("labOrProject"))
+            attendance = parse_decimal(s_data.get("attendancePercent"))
+
+            marks = [m for m in [cie1, cie2, cie3, assignment] if m is not None]
+            calculated_cie = round(sum(marks, Decimal('0')), 2)
+            att = attendance or Decimal('0')
+
+            # Eligibility: attendance >= 85%, CIE >= 12/30 (no lab) or >= 20/50 (with lab)
+            has_lab = assignment is not None
+            cie_threshold = Decimal('20.00') if has_lab else Decimal('12.00')
+
+            is_eligible = True
+            remarks = []
+            if att < Decimal("85.00"):
+                is_eligible = False
+                remarks.append(f"Shortage of attendance ({att}%)")
+            if calculated_cie < cie_threshold:
+                is_eligible = False
+                remarks.append(f"Low CIE marks ({calculated_cie:.2f})")
+
+            if record:
+                record.attendance_percentage = attendance
+                record.cie1_marks = cie1
+                record.cie2_marks = cie2
+                record.cie3_marks = cie3
+                record.assignment_marks = assignment
+                record.cie_marks = calculated_cie
+                record.is_eligible = is_eligible
+                record.remarks = " | ".join(remarks)
+                records_to_update.append(record)
+            else:
+                records_to_create.append(StudentEligibility(
+                    student=student,
+                    subject=subject,
+                    exam_session=session,
+                    attendance_percentage=attendance,
+                    cie1_marks=cie1,
+                    cie2_marks=cie2,
+                    cie3_marks=cie3,
+                    assignment_marks=assignment,
+                    cie_marks=calculated_cie,
+                    is_eligible=is_eligible,
+                    remarks=" | ".join(remarks),
+                ))
+            updated_count += 1
+
+        if records_to_create:
+            StudentEligibility.objects.bulk_create(records_to_create, ignore_conflicts=True)
+        if records_to_update:
+            StudentEligibility.objects.bulk_update(
+                records_to_update,
+                ['attendance_percentage', 'cie1_marks', 'cie2_marks', 'cie3_marks',
+                 'assignment_marks', 'cie_marks', 'is_eligible', 'remarks'],
+                batch_size=100
+            )
+
+        return Response({"message": f"Successfully synced marks for {updated_count} students."}, status=status.HTTP_200_OK)

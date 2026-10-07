@@ -264,7 +264,7 @@ class TimetableSlot(models.Model):
         db_table = "scheduling_timetable_slot"
         ordering = ["exam_date", "start_time"]
         # Hard constraint: no two subjects in the same room at the same time
-        unique_together = [("room", "exam_date", "start_time")]
+        # unique_together removed to support multi-subject interleaving
 
     def __str__(self):
         return (

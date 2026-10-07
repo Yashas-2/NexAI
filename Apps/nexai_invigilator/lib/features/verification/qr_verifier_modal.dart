@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../core/theme/app_theme.dart';
 import '../../models/exam_models.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 
 class QRVerifierModal extends StatefulWidget {
   final List<StudentDeskItem> unverifiedStudents;
@@ -36,15 +37,7 @@ class _QRVerifierModalState extends State<QRVerifierModal> with SingleTickerProv
       CurvedAnimation(parent: _laserController, curve: Curves.easeInOut),
     );
 
-    // Simulate instant QR detection after 1.2s
-    Future.delayed(const Duration(milliseconds: 1200), () {
-      if (mounted && widget.unverifiedStudents.isNotEmpty) {
-        setState(() {
-          _detectedStudent = widget.unverifiedStudents.first;
-          _isScanning = false;
-        });
-      }
-    });
+    // No simulation, wait for actual scan
   }
 
   @override
@@ -129,7 +122,12 @@ class _QRVerifierModalState extends State<QRVerifierModal> with SingleTickerProv
 
           Expanded(
             child: SingleChildScrollView(
-              padding: const EdgeInsets.all(20),
+              padding: EdgeInsets.only(
+                left: 20,
+                right: 20,
+                top: 20,
+                bottom: 20 + MediaQuery.of(context).viewInsets.bottom,
+              ),
               child: Column(
                 children: [
                   // Camera / Scanner Viewport
@@ -150,21 +148,28 @@ class _QRVerifierModalState extends State<QRVerifierModal> with SingleTickerProv
                     child: Stack(
                       alignment: Alignment.center,
                       children: [
-                        // Background Camera Grid Simulation
-                        Opacity(
-                          opacity: 0.15,
-                          child: GridView.builder(
-                            physics: const NeverScrollableScrollPhysics(),
-                            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                              crossAxisCount: 6,
-                              crossAxisSpacing: 8,
-                              mainAxisSpacing: 8,
-                            ),
-                            itemCount: 24,
-                            itemBuilder: (context, i) => Container(
-                              decoration: BoxDecoration(
-                                border: Border.all(color: Colors.white, width: 0.5),
+                        Positioned.fill(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(20),
+                            child: MobileScanner(
+                              controller: MobileScannerController(
+                                detectionSpeed: DetectionSpeed.noDuplicates,
                               ),
+                              onDetect: (capture) {
+                                final List<Barcode> barcodes = capture.barcodes;
+                                for (final barcode in barcodes) {
+                                  final String? usn = barcode.rawValue;
+                                  if (usn != null && _isScanning) {
+                                    final match = widget.unverifiedStudents.where((s) => s.usn == usn).firstOrNull;
+                                    if (match != null) {
+                                      setState(() {
+                                        _detectedStudent = match;
+                                        _isScanning = false;
+                                      });
+                                    }
+                                  }
+                                }
+                              },
                             ),
                           ),
                         ),

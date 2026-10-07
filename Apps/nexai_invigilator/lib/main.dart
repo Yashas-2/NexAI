@@ -1,14 +1,19 @@
 import 'package:flutter/material.dart';
 import 'core/theme/app_theme.dart';
-import 'features/dashboard/invigilator_home_screen.dart';
+import 'features/auth/login_screen.dart';
+import 'features/dashboard/allotments_screen.dart';
+import 'core/network/auth_service.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const NexAIInvigilatorApp());
+  final isLoggedIn = await AuthService.isLoggedIn();
+  runApp(NexAIInvigilatorApp(isLoggedIn: isLoggedIn));
 }
 
 class NexAIInvigilatorApp extends StatelessWidget {
-  const NexAIInvigilatorApp({super.key});
+  final bool isLoggedIn;
+  
+  const NexAIInvigilatorApp({super.key, required this.isLoggedIn});
 
   @override
   Widget build(BuildContext context) {
@@ -16,7 +21,7 @@ class NexAIInvigilatorApp extends StatelessWidget {
       title: 'NexAI Invigilator',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
-      home: const InvigilatorHomeScreen(),
+      home: isLoggedIn ? const AllotmentsScreen() : const LoginScreen(),
     );
   }
 }

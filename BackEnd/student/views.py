@@ -142,6 +142,28 @@ class StudentPortalViewSet(viewsets.ViewSet):
                 })
         return Response(schedule)
 
+    @action(detail=False, methods=['get'])
+    def my_attendance(self, request):
+        student = self._get_student(request.user)
+        if not student:
+            return Response({"error": "Student profile not found"}, status=status.HTTP_404_NOT_FOUND)
+            
+        slot_id = request.query_params.get('slot_id')
+        if not slot_id:
+            return Response({"error": "slot_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+            
+        from scheduling.models import StudentExamAttendance
+        attendance = StudentExamAttendance.objects.filter(timetable_slot_id=slot_id, student=student).first()
+        if attendance:
+            return Response({
+                "is_present": attendance.status.lower() == 'present',
+                "is_qr_verified": attendance.is_qr_verified
+            })
+        return Response({
+            "is_present": False,
+            "is_qr_verified": False
+        })
+
 
 class SEETestViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]

@@ -32,7 +32,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
   onSidebarItemClick
 }) => {
   return (
-    <div style={{ 
+    <div className="main-layout-root" style={{ 
       display: 'flex', 
       minHeight: '100vh', 
       backgroundColor: 'var(--color-bg-base)',
@@ -110,7 +110,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
       />
       
       {/* The main white canvas floating inside the dark background */}
-      <div style={{ 
+      <div className="main-layout-content" style={{ 
         flex: 1, 
         marginLeft: '260px', // Matches the width of the sidebar for a perfect 24px gap (due to outer padding)
         display: 'flex', 

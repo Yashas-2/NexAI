@@ -23,7 +23,7 @@ export const CreateCIEPaperModal: React.FC<CreateCIEPaperModalProps> = ({
   initialPaper,
 }) => {
   const user = useAuthStore(s => s.user);
-  const [newTestType, setNewTestType] = useState<'CIE-1' | 'CIE-2' | 'CIE-3' | 'ASSIGNMENT_TEST'>('CIE-2');
+  const [newTestType, setNewTestType] = useState<'CIE-1' | 'CIE-2' | 'CIE-3' | 'ASSIGNMENT_TEST'>('CIE-1');
   const [newQuestionText, setNewQuestionText] = useState('');
   const [newQuestionAnswer, setNewQuestionAnswer] = useState('');
   const [newQuestionNumber, setNewQuestionNumber] = useState('');
@@ -40,7 +40,7 @@ export const CreateCIEPaperModal: React.FC<CreateCIEPaperModalProps> = ({
         setNewTestType(initialPaper.testType);
       } else {
         setStagedQuestions([]);
-        setNewTestType('CIE-2');
+        setNewTestType('CIE-1');
       }
       setNewQuestionText('');
       setNewQuestionAnswer('');

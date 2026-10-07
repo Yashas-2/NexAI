@@ -145,21 +145,21 @@ export function runAISeatingSolver(
   const normalCandidates = allCandidates.filter(c => !c.isSpecialAccommodated);
 
   // 4. Group by department for interleaving
-  const deptQueues: Record<string, SeatedCandidate[]> = {};
+  const subjectQueues: Record<string, SeatedCandidate[]> = {};
   normalCandidates.forEach(c => {
-    if (!deptQueues[c.department]) deptQueues[c.department] = [];
-    deptQueues[c.department].push(c);
+    if (!subjectQueues[c.subjectCode]) subjectQueues[c.subjectCode] = [];
+    subjectQueues[c.subjectCode].push(c);
   });
 
-  const activeDeptCodes = Object.keys(deptQueues).filter(d => deptQueues[d].length > 0);
+  const activeSubjectCodes = Object.keys(subjectQueues).filter(s => subjectQueues[s].length > 0);
 
-  let currentDeptPointer = 0;
+  let currentSubjPointer = 0;
   const getNextInterleavedCandidate = (): SeatedCandidate | null => {
-    if (activeDeptCodes.length === 0) return null;
-    for (let attempts = 0; attempts < activeDeptCodes.length; attempts++) {
-      const code = activeDeptCodes[currentDeptPointer];
-      currentDeptPointer = (currentDeptPointer + 1) % activeDeptCodes.length;
-      const queue = deptQueues[code];
+    if (activeSubjectCodes.length === 0) return null;
+    for (let attempts = 0; attempts < activeSubjectCodes.length; attempts++) {
+      const code = activeSubjectCodes[currentSubjPointer];
+      currentSubjPointer = (currentSubjPointer + 1) % activeSubjectCodes.length;
+      const queue = subjectQueues[code];
       if (queue && queue.length > 0) {
         return queue.shift()!;
       }
@@ -208,8 +208,8 @@ export function runAISeatingSolver(
             const frontNeighbor = currentSeatIndex >= cols ? seatedCandidates.find(c => c.seatIndex === currentSeatIndex - cols) : null;
 
             let conflict = false;
-            if (leftNeighbor && leftNeighbor.department === candidate.department) conflict = true;
-            if (frontNeighbor && frontNeighbor.department === candidate.department) conflict = true;
+            if (leftNeighbor && leftNeighbor.subjectCode === candidate.subjectCode) conflict = true;
+            if (frontNeighbor && frontNeighbor.subjectCode === candidate.subjectCode) conflict = true;
 
             if (!conflict) {
                 foundValidSeat = true;
@@ -221,8 +221,8 @@ export function runAISeatingSolver(
         if (!foundValidSeat) {
             // We reached the end of the room but couldn't place the candidate without a conflict.
             // Refund the candidate to the queue so they can be placed in the next room
-            deptQueues[candidate.department].unshift(candidate);
-            if (!activeDeptCodes.includes(candidate.department)) activeDeptCodes.push(candidate.department);
+            subjectQueues[candidate.subjectCode].unshift(candidate);
+            if (!activeSubjectCodes.includes(candidate.subjectCode)) activeSubjectCodes.push(candidate.subjectCode);
             break;
         }
 

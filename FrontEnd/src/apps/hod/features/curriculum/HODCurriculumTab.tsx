@@ -331,11 +331,14 @@ export const HODCurriculumTab: React.FC<Props> = ({
       toast.success(`Course ${created.code} successfully created!`);
     } catch (err: any) {
       console.error(err);
-      toast.error(
-        err.response?.data 
-          ? JSON.stringify(err.response.data) 
-          : err.message || 'Failed to create course'
-      );
+      const data = err.response?.data;
+      if (data && typeof data === 'object') {
+        const firstField = Object.keys(data)[0];
+        const msg = Array.isArray(data[firstField]) ? data[firstField][0] : data[firstField];
+        toast.error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+      } else {
+        toast.error(err.message || 'Failed to create course');
+      }
     }
   };
 

@@ -28,9 +28,11 @@ import {
 } from 'lucide-react';
 import { api } from '@/services/api';
 import { CreateDepartmentExamModal } from './components/CreateDepartmentExamModal';
+import { EditExamSessionModal } from './components/EditExamSessionModal';
 import { FacultyDutyChartModal } from './components/FacultyDutyChartModal';
 import { AISeatingEngineModal } from './components/AISeatingEngineModal';
 import toast from 'react-hot-toast';
+import './DepartmentExamsTab.css';
 
 interface Props {
   sessions: DepartmentExamSession[];
@@ -61,6 +63,8 @@ export const DepartmentExamsTab: React.FC<Props> = ({
 
   const [generatingTaskId, setGeneratingTaskId] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [editingSession, setEditingSession] = useState<DepartmentExamSession | null>(null);
 
   // Polling effect: only used if backend returns an async task_id (future Celery support)
   React.useEffect(() => {
@@ -83,9 +87,9 @@ export const DepartmentExamsTab: React.FC<Props> = ({
     return () => clearInterval(interval);
   }, [generatingTaskId]);
 
-  const filteredSessions = filterType === 'ALL'
-    ? sessions
-    : sessions.filter(s => s.examType === filterType);
+  const filteredSessions = sessions.filter(s => {
+    return filterType === 'ALL' || s.examType === filterType;
+  });
 
   const totalStudentsScheduled = sessions.reduce((acc, s) => acc + s.totalStudentsExpected, 0);
   const uniqueRooms = Array.from(new Set(sessions.flatMap(s => s.roomsAllocated))).length;
@@ -101,124 +105,59 @@ export const DepartmentExamsTab: React.FC<Props> = ({
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+    <div className={`dept-exam-container ${isAISeatingOpen ? 'hide-children-on-print' : ''}`}>
       
       {/* ── Top Telemetry Stat Cards ── */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
-        gap: '16px',
-      }}>
-        <div style={{
-          background: 'white',
-          padding: '18px 20px',
-          borderRadius: '16px',
-          border: '1.5px solid #E2E8F0',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.03)',
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-            <span style={{ fontSize: '0.78rem', color: '#64748B', fontWeight: 700, textTransform: 'uppercase' }}>
-              Scheduled Exam Events
-            </span>
-            <div style={{ width: 34, height: 34, borderRadius: '8px', background: '#EEF2FF', color: '#4F46E5', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Calendar size={18} />
+      <div className="stat-cards-grid">
+        <div className="stat-card">
+          <div className="stat-card-header">
+            <span className="stat-card-title">Scheduled Exam Events</span>
+            <div className="stat-card-icon" style={{ background: '#EEF2FF', color: '#4F46E5' }}>
+              <Calendar size={20} />
             </div>
           </div>
-          <div style={{ fontSize: '1.7rem', fontWeight: 800, color: '#0F172A' }}>
-            {sessions.length} Sessions
-          </div>
-          <div style={{ fontSize: '0.75rem', color: '#16A34A', fontWeight: 600, marginTop: '4px' }}>
-            CIE-1, CIE-2 & Practical Labs
-          </div>
+          <div className="stat-card-value">{sessions.length} Sessions</div>
+          <div className="stat-card-subtitle" style={{ color: '#16A34A' }}>CIE-1, CIE-2 & Practical Labs</div>
         </div>
 
-        <div style={{
-          background: 'white',
-          padding: '18px 20px',
-          borderRadius: '16px',
-          border: '1.5px solid #E2E8F0',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.03)',
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-            <span style={{ fontSize: '0.78rem', color: '#64748B', fontWeight: 700, textTransform: 'uppercase' }}>
-              Faculty on Duty
-            </span>
-            <div style={{ width: 34, height: 34, borderRadius: '8px', background: '#ECFDF5', color: '#16A34A', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <UserCheck size={18} />
+        <div className="stat-card">
+          <div className="stat-card-header">
+            <span className="stat-card-title">Faculty on Duty</span>
+            <div className="stat-card-icon" style={{ background: '#ECFDF5', color: '#16A34A' }}>
+              <UserCheck size={20} />
             </div>
           </div>
-          <div style={{ fontSize: '1.7rem', fontWeight: 800, color: '#0F172A' }}>
-            {sessions.length * 3} Duties
-          </div>
-          <div style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: 600, marginTop: '4px' }}>
-            Setters, Invigilators & Evaluators
-          </div>
+          <div className="stat-card-value">{sessions.length * 3} Duties</div>
+          <div className="stat-card-subtitle" style={{ color: '#64748B' }}>Setters, Invigilators & Evaluators</div>
         </div>
 
-        <div style={{
-          background: 'white',
-          padding: '18px 20px',
-          borderRadius: '16px',
-          border: '1.5px solid #E2E8F0',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.03)',
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-            <span style={{ fontSize: '0.78rem', color: '#64748B', fontWeight: 700, textTransform: 'uppercase' }}>
-              Examination Halls
-            </span>
-            <div style={{ width: 34, height: 34, borderRadius: '8px', background: '#FEF3C7', color: '#D97706', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Building size={18} />
+        <div className="stat-card">
+          <div className="stat-card-header">
+            <span className="stat-card-title">Examination Halls</span>
+            <div className="stat-card-icon" style={{ background: '#FEF3C7', color: '#D97706' }}>
+              <Building size={20} />
             </div>
           </div>
-          <div style={{ fontSize: '1.7rem', fontWeight: 800, color: '#0F172A' }}>
-            {uniqueRooms} Rooms
-          </div>
-          <div style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: 600, marginTop: '4px' }}>
-            Halls & Computing Labs Booked
-          </div>
+          <div className="stat-card-value">{uniqueRooms} Rooms</div>
+          <div className="stat-card-subtitle" style={{ color: '#64748B' }}>Halls & Computing Labs Booked</div>
         </div>
 
-        <div style={{
-          background: 'white',
-          padding: '18px 20px',
-          borderRadius: '16px',
-          border: '1.5px solid #E2E8F0',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.03)',
-        }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-            <span style={{ fontSize: '0.78rem', color: '#64748B', fontWeight: 700, textTransform: 'uppercase' }}>
-              Enrolled Candidates
-            </span>
-            <div style={{ width: 34, height: 34, borderRadius: '8px', background: '#F3E8FF', color: '#9333EA', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Users size={18} />
+        <div className="stat-card">
+          <div className="stat-card-header">
+            <span className="stat-card-title">Enrolled Candidates</span>
+            <div className="stat-card-icon" style={{ background: '#F3E8FF', color: '#9333EA' }}>
+              <Users size={20} />
             </div>
           </div>
-          <div style={{ fontSize: '1.7rem', fontWeight: 800, color: '#0F172A' }}>
-            {totalStudentsScheduled} Students
-          </div>
-          <div style={{ fontSize: '0.75rem', color: '#64748B', fontWeight: 600, marginTop: '4px' }}>
-            Batches & Sections Allocated
-          </div>
+          <div className="stat-card-value">{totalStudentsScheduled} Students</div>
+          <div className="stat-card-subtitle" style={{ color: '#64748B' }}>Batches & Sections Allocated</div>
         </div>
       </div>
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '24px', marginBottom: '16px' }}></div>
-
       {/* ── Action Bar & Filters ── */}
-      <div style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        flexWrap: 'wrap',
-        gap: '12px',
-        background: 'white',
-        padding: '14px 20px',
-        borderRadius: '14px',
-        border: '1.5px solid #E2E8F0',
-      }}>
-        {/* Filter Chips */}
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-          <span style={{ fontSize: '0.78rem', fontWeight: 800, color: '#64748B', marginRight: '6px' }}>Filter:</span>
+      <div className="action-bar">
+        <div className="filter-chips">
+          <span style={{ fontSize: '0.82rem', fontWeight: 800, color: '#64748B' }}>Filter:</span>
           {[
             { id: 'ALL', label: 'All Exams' },
             { id: 'CIE-1', label: 'CIE-1' },
@@ -229,180 +168,131 @@ export const DepartmentExamsTab: React.FC<Props> = ({
             <button
               key={f.id}
               onClick={() => setFilterType(f.id)}
-              style={{
-                padding: '5px 12px',
-                borderRadius: '8px',
-                border: filterType === f.id ? '1.5px solid #4F46E5' : '1px solid #CBD5E1',
-                background: filterType === f.id ? '#EEF2FF' : 'white',
-                color: filterType === f.id ? '#4F46E5' : '#475569',
-                fontSize: '0.78rem',
-                fontWeight: 700,
-                cursor: 'pointer',
-              }}
+              className={`filter-chip ${filterType === f.id ? 'active' : 'inactive'}`}
             >
               {f.label}
             </button>
           ))}
+
         </div>
 
-        {/* Action Buttons */}
-        <div style={{ display: 'flex', gap: '10px' }}>
-          <button
-            onClick={() => setIsDutyChartOpen(true)}
-            style={{
-              padding: '8px 16px',
-              borderRadius: '9px',
-              border: '1px solid #CBD5E1',
-              background: 'white',
-              color: '#334155',
-              fontSize: '0.82rem',
-              fontWeight: 700,
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '6px',
-              cursor: 'pointer',
-            }}
-          >
-            <Printer size={15} /> View & Print Duty Chart
+        <div style={{ display: 'flex', gap: '12px' }}>
+          <button onClick={() => setIsDutyChartOpen(true)} className="action-btn secondary">
+            <Printer size={16} /> View & Print Duty Chart
           </button>
-
-          <button
-            onClick={() => setIsCreateOpen(true)}
-            style={{
-              padding: '8px 18px',
-              borderRadius: '9px',
-              border: 'none',
-              background: 'linear-gradient(135deg, #4F46E5 0%, #3730A3 100%)',
-              color: 'white',
-              fontSize: '0.82rem',
-              fontWeight: 800,
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '6px',
-              cursor: 'pointer',
-              boxShadow: '0 4px 12px rgba(79,70,229,0.25)',
-            }}
-          >
-            <Plus size={16} /> Schedule Examination Session
+          <button onClick={() => setIsCreateOpen(true)} className="action-btn primary">
+            <Plus size={18} /> Schedule Examination Session
           </button>
         </div>
       </div>
 
       {/* ── Examination Sessions Master Table ── */}
-      <div style={{
-        background: 'white',
-        borderRadius: '16px',
-        border: '1.5px solid #E2E8F0',
-        overflow: 'hidden',
-        boxShadow: '0 2px 10px rgba(0,0,0,0.03)',
-      }}>
-        <div style={{ padding: '16px 20px', borderBottom: '1px solid #E2E8F0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div className="exam-table-container">
+        <div className="exam-table-header">
           <div>
-            <h4 style={{ margin: 0, fontSize: '0.98rem', fontWeight: 800, color: '#0F172A' }}>
-              Active Department Examination Schedule & Duty Allotment
-            </h4>
-            <p style={{ margin: '2px 0 0 0', fontSize: '0.74rem', color: '#64748B' }}>
-              Comprehensive operational overview of time slots, room allocation, student cohorts, and assigned faculty
-            </p>
+            <h4 className="exam-table-title">Active Department Examination Schedule & Duty Allotment</h4>
+            <p className="exam-table-subtitle">Comprehensive operational overview of time slots, room allocation, student cohorts, and assigned faculty</p>
           </div>
-          <span style={{ fontSize: '0.74rem', color: '#16A34A', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-            <ShieldCheck size={14} /> Official Department Records
+          <span style={{ fontSize: '0.78rem', color: '#16A34A', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+            <ShieldCheck size={16} /> Official Department Records
           </span>
         </div>
 
         <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.82rem' }}>
-            <thead style={{ background: '#F8FAFC', color: '#475569', fontWeight: 800, borderBottom: '1px solid #CBD5E1' }}>
+          <table className="exam-table">
+            <thead>
               <tr>
-                <th style={{ padding: '14px 18px' }}>Exam Event & Course</th>
-                <th style={{ padding: '14px 16px' }}>Date & Timetable</th>
-                <th style={{ padding: '14px 16px' }}>Halls & Cohort</th>
-                <th style={{ padding: '14px 16px' }}>Appointed Faculty Roles</th>
-                <th style={{ padding: '14px 16px' }}>Evaluator Session Key</th>
-                <th style={{ padding: '14px 16px' }}>Status</th>
-                <th style={{ padding: '14px 18px', textAlign: 'right' }}>Room Seating & Notice</th>
+                <th>Exam Event & Course</th>
+                <th>Date & Timetable</th>
+                <th>Halls & Cohort</th>
+                <th>Appointed Faculty Roles</th>
+                <th>Evaluator Session Key</th>
+                <th>Status</th>
+                <th style={{ textAlign: 'right' }}>Room Seating & Notice</th>
               </tr>
             </thead>
             <tbody>
               {filteredSessions.map(session => (
-                <tr key={session.id} style={{ borderBottom: '1px solid #F1F5F9' }}>
+                <tr key={session.id}>
                   
                   {/* Exam & Course */}
-                  <td style={{ padding: '14px 18px' }}>
+                  <td>
                     <span style={{
                       background: session.examType === 'CIE-1' ? '#EEF2FF' : session.examType === 'CIE-2' ? '#F3E8FF' : '#FEF3C7',
                       color: session.examType === 'CIE-1' ? '#4F46E5' : session.examType === 'CIE-2' ? '#9333EA' : '#B45309',
-                      padding: '2px 7px',
-                      borderRadius: '5px',
-                      fontSize: '0.7rem',
+                      padding: '4px 10px',
+                      borderRadius: '8px',
+                      fontSize: '0.72rem',
                       fontWeight: 800,
                       display: 'inline-block',
-                      marginBottom: '4px',
+                      marginBottom: '8px',
+                      boxShadow: '0 2px 4px rgba(0,0,0,0.05)'
                     }}>
                       {session.examType}
                     </span>
-                    <div style={{ fontWeight: 800, color: '#0F172A', fontFamily: 'monospace' }}>
+                    <div style={{ fontWeight: 800, color: '#0F172A', fontFamily: 'monospace', fontSize: '0.9rem' }}>
                       {session.subjectCode}
                     </div>
-                    <div style={{ fontSize: '0.74rem', color: '#64748B' }}>
+                    <div style={{ fontSize: '0.8rem', color: '#475569', marginTop: '2px', fontWeight: 600 }}>
                       {session.subjectTitle}
                     </div>
-                    <div style={{ fontSize: '0.7rem', color: '#94A3B8', marginTop: '2px' }}>
+                    <div style={{ fontSize: '0.72rem', color: '#94A3B8', marginTop: '4px' }}>
                       {session.semester}
                     </div>
                   </td>
 
                   {/* Date & Timetable */}
-                  <td style={{ padding: '14px 16px' }}>
-                    <div style={{ fontWeight: 700, color: '#0F172A', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <Calendar size={13} color="#4F46E5" /> {session.examDate}
+                  <td>
+                    <div style={{ fontWeight: 700, color: '#0F172A', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem' }}>
+                      <Calendar size={14} color="#4F46E5" /> {session.examDate}
                     </div>
-                    <div style={{ fontSize: '0.74rem', color: '#64748B', marginTop: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      <Clock size={12} /> {session.timeSlot}
+                    <div style={{ fontSize: '0.78rem', color: '#64748B', marginTop: '6px', display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 600 }}>
+                      <Clock size={14} /> {session.timeSlot}
                     </div>
                   </td>
 
                   {/* Halls & Cohort */}
-                  <td style={{ padding: '14px 16px' }}>
-                    <div style={{ fontWeight: 700, color: '#0F172A', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <Building size={13} color="#D97706" /> {session.roomsAllocated.join(', ')}
+                  <td>
+                    <div style={{ fontWeight: 700, color: '#0F172A', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem' }}>
+                      <Building size={14} color="#D97706" /> {session.roomsAllocated.join(', ')}
                     </div>
-                    <div style={{ fontSize: '0.74rem', color: '#16A34A', fontWeight: 700, marginTop: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      <Users size={12} /> {session.totalStudentsExpected} Students
+                    <div style={{ fontSize: '0.78rem', color: '#16A34A', fontWeight: 700, marginTop: '6px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Users size={14} /> {session.totalStudentsExpected} Students
                     </div>
-                    <div style={{ fontSize: '0.7rem', color: '#64748B', marginTop: '2px' }}>
+                    <div style={{ fontSize: '0.72rem', color: '#64748B', marginTop: '4px' }}>
                       {session.studentBatches.join(' • ')}
                     </div>
                   </td>
 
                   {/* Faculty Appointments */}
-                  <td style={{ padding: '14px 16px' }}>
-                    <div style={{ fontSize: '0.75rem', marginBottom: '3px' }}>
+                  <td>
+                    <div style={{ fontSize: '0.78rem', marginBottom: '6px' }}>
                       <span style={{ color: '#64748B', fontWeight: 600 }}>Setter: </span>
                       <strong style={{ color: '#0F172A' }}>{session.paperSetterName}</strong>
                     </div>
-                    <div style={{ fontSize: '0.75rem', marginBottom: '3px' }}>
+                    <div style={{ fontSize: '0.78rem', marginBottom: '6px' }}>
                       <span style={{ color: '#64748B', fontWeight: 600 }}>Invigilator: </span>
                       <strong style={{ color: '#0F172A' }}>{session.chiefInvigilatorName}</strong>
                     </div>
-                    <div style={{ fontSize: '0.75rem' }}>
+                    <div style={{ fontSize: '0.78rem' }}>
                       <span style={{ color: '#64748B', fontWeight: 600 }}>Evaluator: </span>
                       <strong style={{ color: '#0F172A' }}>{session.evaluatorName}</strong>
                     </div>
                   </td>
 
                   {/* Evaluator Session Key */}
-                  <td style={{ padding: '14px 16px' }}>
+                  <td>
                     {session.evaluatorSessionKey ? (
-                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
                         <code style={{
                           background: '#F1F5F9',
                           color: '#4F46E5',
-                          padding: '3px 7px',
-                          borderRadius: '6px',
-                          fontSize: '0.72rem',
+                          padding: '4px 10px',
+                          borderRadius: '8px',
+                          fontSize: '0.78rem',
                           fontWeight: 800,
                           border: '1px solid #E2E8F0',
+                          boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.05)'
                         }}>
                           {session.evaluatorSessionKey}
                         </code>
@@ -410,37 +300,44 @@ export const DepartmentExamsTab: React.FC<Props> = ({
                           onClick={() => handleCopyKey(session.evaluatorSessionKey)}
                           title="Copy Key"
                           style={{
-                            background: 'transparent',
-                            border: 'none',
+                            background: 'white',
+                            border: '1px solid #E2E8F0',
+                            borderRadius: '6px',
                             color: '#64748B',
                             cursor: 'pointer',
-                            padding: '2px',
+                            padding: '6px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                            transition: 'all 0.2s'
                           }}
                         >
-                          <Copy size={13} />
+                          <Copy size={14} />
                         </button>
                       </div>
                     ) : (
-                      <span style={{ color: '#94A3B8', fontSize: '0.72rem' }}>No Key Generated</span>
+                      <span style={{ color: '#94A3B8', fontSize: '0.78rem', fontStyle: 'italic' }}>No Key Generated</span>
                     )}
                   </td>
 
                   {/* Status */}
-                  <td style={{ padding: '14px 16px' }}>
-                    {session.status === 'DRAFT' && <Badge variant="warning">DRAFT (Awaiting Generation)</Badge>}
-                    {session.status === 'SCHEDULED' && <Badge variant="neutral">SCHEDULED</Badge>}
+                  <td>
+                    {(session.status as string) === 'DRAFT' && <Badge variant="warning">DRAFT (Awaiting Generation)</Badge>}
+                    {session.status === 'SCHEDULED' && <Badge variant="default">SCHEDULED</Badge>}
                     {session.status === 'FACULTY_APPOINTED' && <Badge variant="info">FACULTY APPOINTED</Badge>}
                     {session.status === 'QP_APPROVED' && <Badge variant="success">QP VERIFIED ✓</Badge>}
                     {session.status === 'IN_PROGRESS' && <Badge variant="warning">CONDUCTION ACTIVE</Badge>}
                     {session.status === 'COMPLETED' && <Badge variant="success">COMPLETED</Badge>}
                   </td>
 
-                  {/* Room Seating & Notice for THIS specific exam */}
-                  <td style={{ padding: '14px 18px', textAlign: 'right' }}>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-end' }}>
-                      {session.status === 'DRAFT' ? (
+                  {/* Room Seating & Notice */}
+                  <td style={{ textAlign: 'right' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', alignItems: 'flex-end' }}>
+                      {(session.status as string) === 'DRAFT' ? (
                         <button
                           disabled={!!generatingTaskId || isGenerating}
+                          className="btn-generate"
                           onClick={async () => {
                             setIsGenerating(true);
                             const loadingToast = toast.loading('Running AI Timetable Solver...');
@@ -449,7 +346,6 @@ export const DepartmentExamsTab: React.FC<Props> = ({
                                 exam_session_id: session.id,
                                 time_limit_secs: 60,
                               });
-                              // Synchronous path: solver finished, result is already in the response
                               if (res.data.sync && res.data.result?.success) {
                                 toast.success(
                                   `Timetable generated in ${res.data.result.wall_time_secs}s — ${res.data.result.slots_created} slot(s) created!`,
@@ -457,7 +353,6 @@ export const DepartmentExamsTab: React.FC<Props> = ({
                                 );
                                 setTimeout(() => window.location.reload(), 1500);
                               } else {
-                                // Async path (future Celery): poll for completion
                                 toast.success('Solver started, waiting for result...', { id: loadingToast });
                                 setGeneratingTaskId(res.data.task_id);
                               }
@@ -470,22 +365,8 @@ export const DepartmentExamsTab: React.FC<Props> = ({
                               setIsGenerating(false);
                             }
                           }}
-                          style={{
-                            padding: '8px 16px',
-                            borderRadius: '8px',
-                            border: 'none',
-                            background: (generatingTaskId || isGenerating) ? '#94A3B8' : 'linear-gradient(135deg, #10B981 0%, #059669 100%)',
-                            color: 'white',
-                            fontSize: '0.74rem',
-                            fontWeight: 800,
-                            cursor: (generatingTaskId || isGenerating) ? 'not-allowed' : 'pointer',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '6px',
-                            boxShadow: (generatingTaskId || isGenerating) ? 'none' : '0 2px 4px rgba(16,185,129,0.3)',
-                          }}
                         >
-                          <Zap size={14} /> {isGenerating ? 'Solver Running...' : generatingTaskId ? 'Awaiting Result...' : 'Run AI Generator'}
+                          <Zap size={16} /> {isGenerating ? 'Solver Running...' : generatingTaskId ? 'Awaiting Result...' : 'Run AI Generator'}
                         </button>
                       ) : (
                         <button
@@ -493,55 +374,52 @@ export const DepartmentExamsTab: React.FC<Props> = ({
                             setSelectedSessionForSeating(session);
                             setIsAISeatingOpen(true);
                           }}
+                          className="btn-seating"
                           title="Open Room Door Seating Grid & Notice Board for this scheduled exam"
-                          style={{
-                            padding: '6px 12px',
-                            borderRadius: '8px',
-                            border: '1.5px solid #4F46E5',
-                            background: '#EEF2FF',
-                            color: '#4F46E5',
-                            fontSize: '0.74rem',
-                            fontWeight: 800,
-                            cursor: 'pointer',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '6px',
-                            whiteSpace: 'nowrap',
-                            boxShadow: '0 2px 4px rgba(79,70,229,0.12)',
-                          }}
                         >
-                          <Grid size={13} /> Seating & Notice
+                          <Grid size={15} /> Seating & Notice
                         </button>
                       )}
                       
-                      <button
-                        onClick={async () => {
-                          if (!window.confirm('Are you sure you want to delete this session?')) return;
-                          try {
-                            await api.delete(`/scheduling/sessions/${session.id}/`);
-                            toast.success('Session deleted successfully');
-                            onUpdateSessions(sessions.filter(s => s.id !== session.id));
-                          } catch (err: any) {
-                            toast.error('Failed to delete session');
-                          }
-                        }}
-                        style={{
-                          background: 'transparent',
-                          color: '#EF4444',
-                          border: 'none',
-                          padding: '4px 8px',
-                          borderRadius: '4px',
-                          fontSize: '0.75rem',
-                          fontWeight: 600,
-                          cursor: 'pointer',
-                          textDecoration: 'underline'
-                        }}
-                      >
-                        Delete Session
-                      </button>
+                      <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                        <button
+                          onClick={() => { setEditingSession(session); setIsEditOpen(true); }}
+                          style={{
+                            background: 'transparent', color: '#4F46E5', border: 'none',
+                            padding: '4px 8px', borderRadius: '6px', fontSize: '0.78rem',
+                            fontWeight: 600, cursor: 'pointer', opacity: 0.8,
+                            transition: 'opacity 0.2s',
+                          }}
+                          onMouseEnter={(e) => e.currentTarget.style.opacity = '1'}
+                          onMouseLeave={(e) => e.currentTarget.style.opacity = '0.8'}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={async () => {
+                            if (!window.confirm('Are you sure you want to delete this session?')) return;
+                            try {
+                              await api.delete(`/scheduling/sessions/${session.id}/`);
+                              toast.success('Session deleted successfully');
+                              onUpdateSessions(sessions.filter(s => s.id !== session.id));
+                            } catch (err: any) {
+                              toast.error('Failed to delete session');
+                            }
+                          }}
+                          style={{
+                            background: 'transparent', color: '#EF4444', border: 'none',
+                            padding: '4px 8px', borderRadius: '6px', fontSize: '0.78rem',
+                            fontWeight: 600, cursor: 'pointer', opacity: 0.7,
+                            transition: 'opacity 0.2s',
+                          }}
+                          onMouseEnter={(e) => e.currentTarget.style.opacity = '1'}
+                          onMouseLeave={(e) => e.currentTarget.style.opacity = '0.7'}
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </div>
                   </td>
-
                 </tr>
               ))}
             </tbody>
@@ -557,6 +435,19 @@ export const DepartmentExamsTab: React.FC<Props> = ({
           halls={halls}
           onClose={() => setIsCreateOpen(false)}
           onCreateSessions={handleCreateSessions}
+        />
+      )}
+
+      {isEditOpen && editingSession && (
+        <EditExamSessionModal
+          isOpen={isEditOpen}
+          session={editingSession}
+          halls={halls}
+          onClose={() => { setIsEditOpen(false); setEditingSession(null); }}
+          onSaved={(updated) => {
+            onUpdateSessions(sessions.map(s => s.id === updated.id ? { ...s, ...updated } : s));
+            toast.success('Session refreshed');
+          }}
         />
       )}
 

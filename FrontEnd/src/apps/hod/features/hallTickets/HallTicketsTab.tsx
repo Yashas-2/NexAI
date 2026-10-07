@@ -211,7 +211,7 @@ export const HallTicketsTab: React.FC<HallTicketsTabProps> = ({
             <CheckCircle2 size={20} />
           </div>
           <div>
-            <div style={{ fontSize: '0.72rem', color: '#16A34A', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Gateway Cleared (≥75%)</div>
+            <div style={{ fontSize: '0.72rem', color: '#16A34A', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Gateway Cleared (≥85%)</div>
             <div style={{ fontSize: '1.35rem', fontWeight: 900, color: '#15803D' }}>{clearedCount} <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#16A34A' }}>({totalTickets > 0 ? Math.round((clearedCount / totalTickets) * 100) : 0}%)</span></div>
           </div>
         </div>
@@ -418,7 +418,7 @@ export const HallTicketsTab: React.FC<HallTicketsTabProps> = ({
               }}
             >
               <option value="ALL">All Gateway Statuses</option>
-              <option value="CLEARED">Gate Cleared (≥75% Attendance)</option>
+              <option value="CLEARED">Gate Cleared (≥85% Attendance)</option>
               <option value="CONDONED">Condoned Waivers Approved</option>
               <option value="SHORTAGE">Shortage / Warning</option>
               <option value="DETAINED">Detained / Non-Eligible</option>
@@ -572,7 +572,7 @@ export const HallTicketsTab: React.FC<HallTicketsTabProps> = ({
                             </div>
 
                             {student.status === 'ELIGIBLE' && (
-                              <Badge variant="success">GATE CLEARED (≥75%)</Badge>
+                              <Badge variant="success">GATE CLEARED (≥85%)</Badge>
                             )}
                             {student.status === 'CONDONABLE' && (
                               student.condonationApproved ? (

@@ -59,9 +59,7 @@ export default function HODDashboard() {
 
   // Master States
   const [activeTab, setActiveTab] = useState<HODTab>('OVERVIEW');
-  const [students, setStudents] = useState<StudentEligibilityRecord[]>(() => {
-    try { const saved = localStorage.getItem('nexai_students'); return saved ? JSON.parse(saved) : INITIAL_STUDENTS; } catch { return INITIAL_STUDENTS; }
-  });
+  const [students, setStudents] = useState<StudentEligibilityRecord[]>(INITIAL_STUDENTS);
   const [hallTickets, setHallTickets] = useState<HallTicketRecord[]>(() => {
     try { const saved = localStorage.getItem('nexai_hall_tickets'); return saved ? JSON.parse(saved) : INITIAL_HALL_TICKETS; } catch { return INITIAL_HALL_TICKETS; }
   });
@@ -102,7 +100,7 @@ export default function HODDashboard() {
           usn: r.usn,
           name: r.name,
           email: r.email,
-          semester: r.semester ? `${r.semester}th Sem` : '5th Sem',
+          semester: r.semester ? `${r.semester}th Semester` : '5th Semester',
           department: r.department_code || 'CS',
           section: r.section || 'A',
           subjectCode: r.subject_code,
@@ -111,8 +109,10 @@ export default function HODDashboard() {
           attendancePercent: parseFloat(r.attendance_percentage || '0'),
           totalClassesHeld: 40,
           classesAttended: Math.floor(40 * (parseFloat(r.attendance_percentage || '0') / 100)),
-          cie1Score: 0,
-          cie2Score: 0,
+          cie1Score: r.cie1_marks !== null && r.cie1_marks !== undefined ? parseFloat(r.cie1_marks) : 0,
+          cie2Score: r.cie2_marks !== null && r.cie2_marks !== undefined ? parseFloat(r.cie2_marks) : 0,
+          cie3Score: r.cie3_marks !== null && r.cie3_marks !== undefined ? parseFloat(r.cie3_marks) : 0,
+          assignmentScore: r.assignment_marks !== null && r.assignment_marks !== undefined ? parseFloat(r.assignment_marks) : 0,
           cieMarksAvg: parseFloat(r.cie_marks || '0'),
           status: r.is_eligible ? 'ELIGIBLE' as const : 'DETAINED' as const,
           hasFeeDues: false,
@@ -120,7 +120,6 @@ export default function HODDashboard() {
         }));
         
         setStudents(mapped);
-        try { localStorage.setItem('nexai_students', JSON.stringify(mapped)); } catch (e) {}
       })
       .catch(console.error);
   };
@@ -172,11 +171,11 @@ export default function HODDashboard() {
         setExamHalls(rooms.map((r: any) => ({
           id: r.id,
           roomNumber: r.name,
-          blockName: `${r.building} - Floor ${r.floor}`,
-          rowsCount: 0,
-          colsCount: 0,
+          blockName: `${r.building} - Floor ${r.floor ?? 0}`,
+          rowsCount: r.rows_count || 0,
+          colsCount: r.cols_count || 0,
           capacity: r.exam_capacity,
-          benchType: 'SINGLE_SEATER' as const,
+          benchType: (r.bench_style || 'SINGLE_SEATER') as 'SINGLE_SEATER' | 'DOUBLE_SEATER',
           isCCTVEnabled: r.has_cctv,
           isAC: r.has_wifi,
           status: r.is_active ? 'ACTIVE' as const : 'MAINTENANCE' as const,
@@ -223,9 +222,9 @@ export default function HODDashboard() {
           subjectCode: s.subject_list?.length ? s.subject_list.join(', ') : 'Department Level',
           subjectTitle: s.name,
           semester: `Semester ${s.semester || 'N/A'}`,
-          examType: s.name.toUpperCase().includes('CIE') ? 'CIE' : 'DEPARTMENT_EXAM',
-          examDate: s.start_date,
-          timeSlot: `${s.start_date} to ${s.end_date}`,
+          examType: s.name.toUpperCase().includes('CIE-2') ? 'CIE-2' : s.name.toUpperCase().includes('CIE') ? 'CIE-1' : 'DEPARTMENT_EXAM',
+          examDate: s.start_date ? s.start_date.split('T')[0] : '',
+          timeSlot: `${s.start_date ? s.start_date.split('T')[0] : ''} to ${s.end_date ? s.end_date.split('T')[0] : ''}`,
           roomsAllocated: s.rooms || [],
           totalStudentsExpected: s.student_count || 0,
           studentBatches: [],
@@ -234,11 +233,19 @@ export default function HODDashboard() {
           evaluatorName: 'Course Handlers',
           status: s.status,
           evaluatorSessionKey: s.id.split('-')[0].toUpperCase(),
-          schedulingTaskId: s.scheduling_task_id
+          schedulingTaskId: s.scheduling_task_id,
+          // Preserve raw backend fields for edit modal
+          name: s.name,
+          start_date: s.start_date,
+          end_date: s.end_date,
+          selected_slots: s.selected_slots || [],
+          selected_rooms: s.selected_rooms || [],
+          exams_per_day: s.exams_per_day,
         })));
       })
       .catch(console.error);
     fetchEligibilityRecords();
+    document.addEventListener('visibilitychange', handleVisRefresh);
     // Fetch Hall Tickets from backend
     api.get('/eligibility/hall-tickets/')
       .then(res => {
@@ -271,19 +278,20 @@ export default function HODDashboard() {
     return () => {
       window.removeEventListener('nexai_cie_papers_updated', handleSync);
       window.removeEventListener('storage', handleSync);
+      document.removeEventListener('visibilitychange', handleVisRefresh);
     };
+
+    function handleVisRefresh() {
+      if (document.visibilityState === 'visible') fetchEligibilityRecords();
+    }
   }, []);
 
 
 
-  // Handlers with localStorage persistence + backend sync
+  // Handlers with backend sync
   const handleUpdateStudent = async (updatedStudent: StudentEligibilityRecord) => {
     // Optimistic update
-    setStudents(prev => {
-      const next = prev.map(s => (s.id === updatedStudent.id ? updatedStudent : s));
-      try { localStorage.setItem('nexai_students', JSON.stringify(next)); } catch (e) {}
-      return next;
-    });
+    setStudents(prev => prev.map(s => (s.id === updatedStudent.id ? updatedStudent : s)));
 
     // Backend sync
     try {
@@ -309,20 +317,12 @@ export default function HODDashboard() {
   };
 
   const handleBulkAddStudents = (newStudents: StudentEligibilityRecord[]) => {
-    setStudents(prev => {
-      const next = [...newStudents, ...prev];
-      try { localStorage.setItem('nexai_students', JSON.stringify(next)); } catch (e) {}
-      return next;
-    });
+    setStudents(prev => [...newStudents, ...prev]);
   };
 
   const handleDeleteStudent = async (studentId: string) => {
     // Optimistic update
-    setStudents(prev => {
-      const next = prev.filter(s => s.id !== studentId);
-      try { localStorage.setItem('nexai_students', JSON.stringify(next)); } catch (e) {}
-      return next;
-    });
+    setStudents(prev => prev.filter(s => s.id !== studentId));
 
     // Backend sync
     try {
@@ -419,7 +419,7 @@ export default function HODDashboard() {
     },
     ELIGIBILITY: {
       title: 'Student Eligibility & Attendance Gateway',
-      subtitle: 'Monitor attendance cutoffs (≥75%), verify medical condonation waivers, and resolve fee blockages.',
+      subtitle: 'Monitor attendance cutoffs (≥85%), verify medical condonation waivers, and resolve fee blockages.',
       icon: <CheckCircle2 size={26} />,
       accentColor: '#10b981',
     },
@@ -539,6 +539,7 @@ export default function HODDashboard() {
           {activeTab === 'ELIGIBILITY' && (
             <EligibilityGatewayTab
               students={students}
+              courses={courses}
               onUpdateStudent={handleUpdateStudent}
               onBulkAddStudents={handleBulkAddStudents}
               onDeleteStudent={handleDeleteStudent}

@@ -16,6 +16,8 @@ import {
   FileCheck2
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { CheckCircle2 } from 'lucide-react';
+import { AssignSetterModal } from './components/AssignSetterModal';
 
 export type OfficerRole = 'HOD' | 'SCRUTINIZER' | 'SCANNING_OFFICER' | 'EVALUATOR' | 'INVIGILATOR' | 'PAPER_SETTER' | 'FACULTY' | 'STUDENT' | 'ADMISSION' | 'ADMIN';
 
@@ -78,6 +80,8 @@ export const CredentialManagementTab: React.FC = () => {
 
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [assignSetterTarget, setAssignSetterTarget] = useState<OfficerCredential | null>(null);
+  const [assignedSetters, setAssignedSetters] = useState<Set<string>>(new Set());
   const [newOfficerName, setNewOfficerName] = useState('');
   const [newOfficerEmail, setNewOfficerEmail] = useState('');
   const [newOfficerRole, setNewOfficerRole] = useState<OfficerRole>('HOD');
@@ -600,6 +604,30 @@ export const CredentialManagementTab: React.FC = () => {
                               <RotateCw size={13} /> Reset Passcode
                             </button>
 
+                            {officer.role === 'PAPER_SETTER' && (
+                              assignedSetters.has(officer.id) ? (
+                                <span style={{
+                                  display: 'inline-flex', alignItems: 'center', gap: '4px',
+                                  background: '#DCFCE7', color: '#166534', padding: '6px 10px',
+                                  borderRadius: '6px', fontSize: '0.75rem', fontWeight: 800
+                                }}>
+                                  <CheckCircle2 size={13} /> Assigned
+                                </span>
+                              ) : (
+                                <button
+                                  onClick={() => setAssignSetterTarget(officer)}
+                                  style={{
+                                    display: 'inline-flex', alignItems: 'center', gap: '4px',
+                                    background: '#FFFBEB', border: '1px solid #FEF3C7', color: '#B45309',
+                                    padding: '6px 10px', borderRadius: '6px', fontSize: '0.75rem', fontWeight: 800, cursor: 'pointer',
+                                  }}
+                                  title="Assign Subjects to this Setter"
+                                >
+                                  Assign Subject
+                                </button>
+                              )
+                            )}
+
                             <button
                               onClick={() => handleToggleStatus(officer.id)}
                               style={{
@@ -835,6 +863,15 @@ export const CredentialManagementTab: React.FC = () => {
             </form>
           </div>
         </div>
+      )}
+          {assignSetterTarget && (
+        <AssignSetterModal
+          setter={assignSetterTarget}
+          onClose={() => setAssignSetterTarget(null)}
+          onSuccess={() => {
+            setAssignedSetters(prev => new Set(prev).add(assignSetterTarget?.id || ''));
+          }}
+        />
       )}
     </div>
   );

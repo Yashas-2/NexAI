@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'dart:ui' as ui;
+import 'dart:convert';
+import 'package:flutter/rendering.dart';
 import '../../../core/theme/app_theme.dart';
 
 enum PaperStyle { ruled, grid, plain }
@@ -26,6 +29,7 @@ class DigitalPaperCanvas extends StatefulWidget {
   final int pageNumber;
   final int totalPages;
   final VoidCallback? onPageAdded;
+  final String? initialImageBase64;
 
   const DigitalPaperCanvas({
     super.key,
@@ -33,13 +37,69 @@ class DigitalPaperCanvas extends StatefulWidget {
     this.pageNumber = 1,
     this.totalPages = 4,
     this.onPageAdded,
+    this.initialImageBase64,
   });
 
   @override
-  State<DigitalPaperCanvas> createState() => _DigitalPaperCanvasState();
+  State<DigitalPaperCanvas> createState() => DigitalPaperCanvasState();
 }
 
-class _DigitalPaperCanvasState extends State<DigitalPaperCanvas> {
+class DigitalPaperCanvasState extends State<DigitalPaperCanvas> {
+  final GlobalKey _boundaryKey = GlobalKey();
+  ui.Image? _backgroundImage;
+  bool hasDrawn = false;
+
+  Future<String?> captureAsBase64() async {
+    try {
+      final boundary = _boundaryKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+      if (boundary == null) return null;
+      
+      final image = await boundary.toImage(pixelRatio: 2.0);
+      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData == null) return null;
+      
+      final uint8List = byteData.buffer.asUint8List();
+      return base64Encode(uint8List);
+    } catch (e) {
+      debugPrint("Error capturing canvas: $e");
+      return null;
+    }
+  }
+
+  void restoreFromBase64(String? base64String) {
+    if (base64String == null || base64String.isEmpty) {
+      setState(() { _backgroundImage = null; });
+      return;
+    }
+    try {
+      final bytes = base64Decode(base64String);
+      ui.decodeImageFromList(bytes, (image) {
+        if (mounted) {
+          setState(() { _backgroundImage = image; });
+        }
+      });
+    } catch (e) {
+      debugPrint("Error restoring canvas: $e");
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.initialImageBase64 != null && widget.initialImageBase64!.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        restoreFromBase64(widget.initialImageBase64);
+      });
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant DigitalPaperCanvas oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.initialImageBase64 != oldWidget.initialImageBase64) {
+      restoreFromBase64(widget.initialImageBase64);
+    }
+  }
   PaperStyle _paperStyle = PaperStyle.ruled;
   DrawingToolType _selectedTool = DrawingToolType.pen;
   Color _selectedColor = const Color(0xFF1E40AF); // Royal Blue Exam Ink
@@ -111,6 +171,7 @@ class _DigitalPaperCanvasState extends State<DigitalPaperCanvas> {
           color: color,
           strokeWidth: width,
         ));
+        hasDrawn = true;
       }
       _currentPoints = [];
     });
@@ -179,16 +240,21 @@ class _DigitalPaperCanvasState extends State<DigitalPaperCanvas> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  // Tool Icons Group
-                  Row(
-                    children: [
-                      _buildToolButton(DrawingToolType.pen, Icons.edit, 'Pen'),
-                      _buildToolButton(DrawingToolType.highlighter, Icons.brush, 'Marker'),
-                      _buildToolButton(DrawingToolType.rectangle, Icons.crop_square, 'Box'),
-                      _buildToolButton(DrawingToolType.circle, Icons.circle_outlined, 'Circle'),
-                      _buildToolButton(DrawingToolType.line, Icons.arrow_right_alt, 'Line'),
-                      _buildToolButton(DrawingToolType.eraser, Icons.auto_fix_normal, 'Eraser'),
-                    ],
+                  // Tool Icons Group — scrollable so Eraser always visible
+                  Expanded(
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          _buildToolButton(DrawingToolType.pen, Icons.edit, 'Pen'),
+                          _buildToolButton(DrawingToolType.highlighter, Icons.brush, 'Marker'),
+                          _buildToolButton(DrawingToolType.rectangle, Icons.crop_square, 'Box'),
+                          _buildToolButton(DrawingToolType.circle, Icons.circle_outlined, 'Circle'),
+                          _buildToolButton(DrawingToolType.line, Icons.arrow_right_alt, 'Line'),
+                          _buildToolButton(DrawingToolType.eraser, Icons.auto_fix_off, 'Eraser'),
+                        ],
+                      ),
+                    ),
                   ),
 
                   // Undo, Redo, Clear
@@ -226,67 +292,72 @@ class _DigitalPaperCanvasState extends State<DigitalPaperCanvas> {
               const SizedBox(height: 6),
 
               // Row 2: Color Palette, Stroke Thickness & Paper Style Picker
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  // Color Chips
-                  Row(
-                    children: _availableColors.map((col) {
-                      final isSelected = _selectedColor == col && _selectedTool != DrawingToolType.eraser;
-                      return InkWell(
-                        onTap: () => setState(() => _selectedColor = col),
-                        child: Container(
-                          margin: const EdgeInsets.only(right: 6),
-                          width: 22,
-                          height: 22,
-                          decoration: BoxDecoration(
-                            color: col,
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: isSelected ? Colors.white : Colors.transparent,
-                              width: 2,
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    // Color Chips
+                    Row(
+                      children: _availableColors.map((col) {
+                        final isSelected = _selectedColor == col && _selectedTool != DrawingToolType.eraser;
+                        return InkWell(
+                          onTap: () => setState(() => _selectedColor = col),
+                          child: Container(
+                            margin: const EdgeInsets.only(right: 6),
+                            width: 22,
+                            height: 22,
+                            decoration: BoxDecoration(
+                              color: col,
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: isSelected ? Colors.white : Colors.transparent,
+                                width: 2,
+                              ),
                             ),
                           ),
-                        ),
-                      );
-                    }).toList(),
-                  ),
-
-                  // Stroke Width Toggle
-                  Row(
-                    children: [
-                      _buildWidthSelector(1.5, 'Fine'),
-                      const SizedBox(width: 4),
-                      _buildWidthSelector(3.0, 'Med'),
-                      const SizedBox(width: 4),
-                      _buildWidthSelector(6.0, 'Bold'),
-                    ],
-                  ),
-
-                  // Paper Pattern Dropdown
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(6),
+                        );
+                      }).toList(),
                     ),
-                    child: DropdownButton<PaperStyle>(
-                      value: _paperStyle,
-                      dropdownColor: AppTheme.bgDark,
-                      underline: const SizedBox(),
-                      icon: const Icon(Icons.arrow_drop_down, color: Colors.white70, size: 16),
-                      style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700),
-                      items: const [
-                        DropdownMenuItem(value: PaperStyle.ruled, child: Text('Ruled Lines')),
-                        DropdownMenuItem(value: PaperStyle.grid, child: Text('Graph Grid')),
-                        DropdownMenuItem(value: PaperStyle.plain, child: Text('Blank Sheet')),
+                    const SizedBox(width: 16),
+
+                    // Stroke Width Toggle
+                    Row(
+                      children: [
+                        _buildWidthSelector(1.5, 'Fine'),
+                        const SizedBox(width: 4),
+                        _buildWidthSelector(3.0, 'Med'),
+                        const SizedBox(width: 4),
+                        _buildWidthSelector(6.0, 'Bold'),
                       ],
-                      onChanged: (val) {
-                        if (val != null) setState(() => _paperStyle = val);
-                      },
                     ),
-                  ),
-                ],
+                    const SizedBox(width: 16),
+
+                    // Paper Pattern Dropdown
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: DropdownButton<PaperStyle>(
+                        value: _paperStyle,
+                        dropdownColor: AppTheme.bgDark,
+                        underline: const SizedBox(),
+                        icon: const Icon(Icons.arrow_drop_down, color: Colors.white70, size: 16),
+                        style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700),
+                        items: const [
+                          DropdownMenuItem(value: PaperStyle.ruled, child: Text('Ruled Lines')),
+                          DropdownMenuItem(value: PaperStyle.grid, child: Text('Graph Grid')),
+                          DropdownMenuItem(value: PaperStyle.plain, child: Text('Blank Sheet')),
+                        ],
+                        onChanged: (val) {
+                          if (val != null) setState(() => _paperStyle = val);
+                        },
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
@@ -310,8 +381,10 @@ class _DigitalPaperCanvasState extends State<DigitalPaperCanvas> {
             ),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(16),
-              child: Stack(
-                children: [
+              child: RepaintBoundary(
+                key: _boundaryKey,
+                child: Stack(
+                  children: [
                   // Paper Background Grid / Ruled Lines Painter
                   Positioned.fill(
                     child: CustomPaint(
@@ -341,6 +414,7 @@ class _DigitalPaperCanvasState extends State<DigitalPaperCanvas> {
                           currentStrokeWidth: _selectedTool == DrawingToolType.highlighter
                               ? 16.0
                               : _strokeWidth,
+                          backgroundImage: _backgroundImage,
                         ),
                       ),
                     ),
@@ -376,6 +450,7 @@ class _DigitalPaperCanvasState extends State<DigitalPaperCanvas> {
                   ),
                 ],
               ),
+              ),
             ),
           ),
         ),
@@ -385,6 +460,8 @@ class _DigitalPaperCanvasState extends State<DigitalPaperCanvas> {
 
   Widget _buildToolButton(DrawingToolType type, IconData icon, String label) {
     final isSelected = _selectedTool == type;
+    final isEraser = type == DrawingToolType.eraser;
+    final activeColor = isEraser ? AppTheme.accentAmber : AppTheme.primary;
     return InkWell(
       onTap: () => setState(() => _selectedTool = type),
       borderRadius: BorderRadius.circular(8),
@@ -392,8 +469,11 @@ class _DigitalPaperCanvasState extends State<DigitalPaperCanvas> {
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
         margin: const EdgeInsets.only(right: 4),
         decoration: BoxDecoration(
-          color: isSelected ? AppTheme.primary : Colors.transparent,
+          color: isSelected ? activeColor : Colors.transparent,
           borderRadius: BorderRadius.circular(8),
+          border: isEraser && !isSelected
+              ? Border.all(color: Colors.white24, width: 1)
+              : null,
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -520,6 +600,7 @@ class DrawingSurfacePainter extends CustomPainter {
   final DrawingToolType currentTool;
   final Color currentColor;
   final double currentStrokeWidth;
+  final ui.Image? backgroundImage;
 
   DrawingSurfacePainter({
     required this.elements,
@@ -527,10 +608,18 @@ class DrawingSurfacePainter extends CustomPainter {
     required this.currentTool,
     required this.currentColor,
     required this.currentStrokeWidth,
+    this.backgroundImage,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
+    // 0. Draw restored background image if present
+    if (backgroundImage != null) {
+      final src = Rect.fromLTWH(0, 0, backgroundImage!.width.toDouble(), backgroundImage!.height.toDouble());
+      final dst = Rect.fromLTWH(0, 0, size.width, size.height);
+      canvas.drawImageRect(backgroundImage!, src, dst, Paint());
+    }
+
     // 1. Render all committed elements
     for (final elem in elements) {
       final paint = Paint()

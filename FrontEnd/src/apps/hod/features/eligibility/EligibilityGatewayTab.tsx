@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuthStore } from '@/store/authStore';
-import { StudentEligibilityRecord } from '../../types';
+import { StudentEligibilityRecord, CourseRecord } from '../../types';
 import { Badge } from '@/components/ui/Badge';
 import {
   Search,
@@ -20,6 +20,7 @@ import { api } from '@/services/api';
 
 interface EligibilityGatewayTabProps {
   students: StudentEligibilityRecord[];
+  courses?: CourseRecord[];
   onUpdateStudent: (student: StudentEligibilityRecord) => void;
   onBulkAddStudents: (newStudents: StudentEligibilityRecord[]) => void;
   onDeleteStudent?: (studentId: string) => void;
@@ -29,41 +30,13 @@ interface EligibilityGatewayTabProps {
   onRefreshData?: () => void; // Added for reloading after bulk generate
 }
 
-const ALL_SUBJECTS: Record<string, Record<string, { code: string; title: string; faculty: string }[]>> = {
-  'CSE': {
-    '3rd Sem': [
-      { code: 'CS201', title: 'Data Structures & Algorithms', faculty: 'Prof. Alan Turing' },
-      { code: 'CS203', title: 'Discrete Mathematics & Graph Theory', faculty: 'Dr. John von Neumann' },
-    ],
-    '5th Sem': [
-      { code: 'CS301', title: 'Operating Systems & Kernel Design', faculty: 'Dr. Barbara Liskov' },
-      { code: 'CS302', title: 'Database Management Systems', faculty: 'Dr. Edgar Codd' },
-    ],
-    '7th Sem': [
-      { code: 'CS401', title: 'Distributed Systems & Cloud Computing', faculty: 'Dr. Leslie Lamport' },
-      { code: 'CS402', title: 'Artificial Intelligence & Machine Learning', faculty: 'Prof. Geoffrey Hinton' },
-    ],
-  },
-  'ME': {
-    '3rd Sem': [
-      { code: 'ME201', title: 'Thermodynamics & Heat Transfer', faculty: 'Dr. Sadi Carnot' },
-      { code: 'ME203', title: 'Mechanics of Materials', faculty: 'Prof. Stephen Timoshenko' },
-    ],
-    '5th Sem': [
-      { code: 'ME301', title: 'Fluid Mechanics & Machinery', faculty: 'Dr. Osborne Reynolds' },
-      { code: 'ME302', title: 'Kinematics of Machines', faculty: 'Dr. Franz Reuleaux' },
-    ],
-    '7th Sem': [
-      { code: 'ME401', title: 'Automotive Engineering', faculty: 'Prof. Henry Ford' },
-      { code: 'ME402', title: 'Robotics & Automation', faculty: 'Dr. Joseph Engelberger' },
-    ],
-  }
-};
+// Dynamic subjects from the courses prop will be used instead of dummy data
 
 const HOD_ROLES = ['HOD'];
 
 export const EligibilityGatewayTab: React.FC<EligibilityGatewayTabProps> = ({
   students,
+  courses,
   onUpdateStudent,
   onBulkAddStudents,
   onNavigateToHallTickets: _onNavigateToHallTickets,
@@ -91,8 +64,7 @@ export const EligibilityGatewayTab: React.FC<EligibilityGatewayTabProps> = ({
   const handleSemesterChange = (newSem: string) => {
     setSelectedSemester(newSem);
     if (newSem !== 'ALL' && selectedSubject !== 'ALL') {
-      const deptSubjects = ALL_SUBJECTS[departmentFilter || 'CSE'] || ALL_SUBJECTS['CSE'];
-      const semSubjects = deptSubjects[newSem] || [];
+      const semSubjects = (courses || []).filter(c => c.semester === newSem);
       if (!semSubjects.some(s => s.code === selectedSubject)) {
         setSelectedSubject('ALL');
       }
@@ -100,15 +72,26 @@ export const EligibilityGatewayTab: React.FC<EligibilityGatewayTabProps> = ({
   };
 
   // Compute available subjects for the dropdown
-  const deptSubjects = ALL_SUBJECTS[departmentFilter || 'CSE'] || ALL_SUBJECTS['CSE'];
-  const availableSubjects = selectedSemester === 'ALL'
-    ? Object.values(deptSubjects).flat()
-    : deptSubjects[selectedSemester] || [];
+  const deptCourses = (courses || []).filter(c => 
+    !departmentFilter || 
+    c.department.toUpperCase().includes(departmentFilter.toUpperCase()) || 
+    c.department === 'Computer Science & Engineering' // Fallback for CS
+  );
+
+  const uniqueSemesters = Array.from(new Set(deptCourses.map(c => c.semester))).sort();
+
+  const availableSubjects = deptCourses
+    .filter(c => selectedSemester === 'ALL' || c.semester === selectedSemester)
+    .map(c => ({
+      code: c.code,
+      title: c.title,
+      faculty: c.assignedFacultyName || 'Unassigned'
+    }));
 
   // Filter logic: Filter by Department, Semester, Subject, Status, and Search Query
   const filteredStudents = students.filter(s => {
-    if (departmentFilter && s.department !== departmentFilter) return false;
-    if (selectedDepartment !== 'ALL' && s.department !== selectedDepartment) return false;
+    if (departmentFilter && s.department && departmentFilter !== s.department && !departmentFilter.includes(s.department) && !s.department.includes(departmentFilter)) return false;
+    if (selectedDepartment !== 'ALL' && s.department !== selectedDepartment && !selectedDepartment.includes(s.department) && !s.department.includes(selectedDepartment)) return false;
     if (selectedSemester !== 'ALL' && s.semester !== selectedSemester) return false;
     if (selectedSubject !== 'ALL' && s.subjectCode !== selectedSubject) return false;
     if (selectedStatus !== 'ALL' && s.status !== selectedStatus) return false;
@@ -335,10 +318,10 @@ export const EligibilityGatewayTab: React.FC<EligibilityGatewayTabProps> = ({
                 cursor: 'pointer',
               }}
             >
-              <option value="ALL">All Semesters (3rd, 5th, 7th)</option>
-              <option value="3rd Sem">3rd Semester B.Tech</option>
-              <option value="5th Sem">5th Semester B.Tech</option>
-              <option value="7th Sem">7th Semester B.Tech</option>
+              <option value="ALL">All Semesters</option>
+              {uniqueSemesters.map(sem => (
+                <option key={sem} value={sem}>{sem}</option>
+              ))}
             </select>
           </div>
 
@@ -389,7 +372,7 @@ export const EligibilityGatewayTab: React.FC<EligibilityGatewayTabProps> = ({
             }}
           >
             <option value="ALL">All Statuses</option>
-            <option value="ELIGIBLE">Eligible (≥75% Attendance)</option>
+            <option value="ELIGIBLE">Eligible (≥85% Attendance)</option>
             <option value="CONDONABLE">Condonable Shortage (65%–74.9%)</option>
             <option value="DETAINED">Detained (&lt;65% Attendance)</option>
             <option value="FEE_BLOCKED">Fee Dues Blocked</option>
@@ -461,7 +444,7 @@ export const EligibilityGatewayTab: React.FC<EligibilityGatewayTabProps> = ({
             </div>
           </div>
           <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
-            Attendance Threshold: <strong>≥75%</strong> | Condonation Floor: <strong>65%</strong>
+            Attendance Threshold: <strong>≥85%</strong> | Condonation Floor: <strong>65%</strong>
           </span>
         </div>
 
@@ -597,7 +580,7 @@ export const EligibilityGatewayTab: React.FC<EligibilityGatewayTabProps> = ({
                                             </span>
                                           ) : subjectRecord.status === 'CONDONABLE' ? (
                                             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: '#D97706', fontWeight: 800 }}>
-                                              CONDONABLE ({'<75%'})
+                                              CONDONABLE ({'<85%'})
                                             </span>
                                           ) : subjectRecord.status === 'FEE_BLOCKED' ? (
                                             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: '#E11D48', fontWeight: 800 }}>

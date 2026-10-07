@@ -128,6 +128,21 @@ export const BlueprintHeader: React.FC<BlueprintHeaderProps> = ({
     }
   };
 
+  
+  const parseTime = (timeStr?: string) => {
+    if (!timeStr) return '09:30';
+    try {
+      const [time, modifier] = timeStr.trim().split(' ');
+      if (!modifier) return timeStr;
+      let [hours, minutes] = time.split(':');
+      if (hours === '12') hours = '00';
+      if (modifier.toUpperCase() === 'PM') hours = String(parseInt(hours, 10) + 12);
+      return `${hours.padStart(2, '0')}:${minutes}`;
+    } catch {
+      return '09:30';
+    }
+  };
+
   const handleSave = async () => {
     if (!sessionId) {
       toast.error('No exam session selected');
@@ -149,9 +164,9 @@ export const BlueprintHeader: React.FC<BlueprintHeaderProps> = ({
           allocations.push({
             subject_code: subjectCode,
             room_name: room.roomNumber,
-            exam_date: _scopeConfig?.startDate || new Date().toISOString().slice(0, 10),
-            start_time: _scopeConfig?.selectedSlots?.[0]?.startTime || '09:30',
-            end_time: _scopeConfig?.selectedSlots?.[0]?.endTime || '12:30',
+            exam_date: room.examDate || _scopeConfig?.startDate || new Date().toISOString().slice(0, 10),
+            start_time: parseTime(_scopeConfig?.selectedSlots?.[0]?.startTime) || '09:30',
+            end_time: parseTime(_scopeConfig?.selectedSlots?.[0]?.endTime) || '12:30',
             chief_invigilator_email: room.chiefInvigilator?.email || '',
             reliever_invigilator_email: room.relieverInvigilator?.email || '',
           });

@@ -97,15 +97,17 @@ from .models import CIEAttempt, CIEAnswer
 class CIEAnswerSerializer(serializers.ModelSerializer):
     class Meta:
         model = CIEAnswer
-        fields = ['id', 'question_text', 'answer_text', 'marks_awarded']
+        fields = ['id', 'question_text', 'answer_text', 'answer_image_base64', 'extracted_text', 'marks_awarded']
         read_only_fields = ['marks_awarded']
 
 class CIEAttemptSerializer(serializers.ModelSerializer):
     answers = CIEAnswerSerializer(many=True, read_only=True)
     subject_code = serializers.CharField(source='cie_config.subject.code', read_only=True)
     cie_number = serializers.CharField(source='cie_config.cie_number', read_only=True)
+    student_usn = serializers.CharField(source='student.usn', read_only=True)
+    student_name = serializers.CharField(source='student.user.full_name', read_only=True)
 
     class Meta:
         model = CIEAttempt
-        fields = ['id', 'student', 'cie_config', 'subject_code', 'cie_number', 'started_at', 'submitted_at', 'is_locked', 'answers']
-        read_only_fields = ['started_at', 'submitted_at', 'is_locked']
+        fields = ['id', 'student', 'student_usn', 'student_name', 'cie_config', 'subject_code', 'cie_number', 'started_at', 'submitted_at', 'is_locked', 'submission_status', 'answers']
+        read_only_fields = ['started_at', 'submitted_at', 'is_locked', 'submission_status']

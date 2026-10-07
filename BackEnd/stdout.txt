@@ -1,0 +1,1017 @@
+﻿"""NexAI Scheduling – API Views"""
+from celery.result import AsyncResult
+from rest_framework import generics, status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.response import Response
+
+from core.permissions import IsChiefSuperintendent, IsStaff, IsChiefSuperintendentOrHOD
+from .models import Subject, Room, ExamSession, TimetableSlot, InvigilationDuty, StudentSubjectEnrollment
+from .serializers import (
+    SubjectSerializer,
+    RoomSerializer,
+    ExamSessionSerializer,
+    TimetableSlotSerializer,
+    InvigilationDutySerializer,
+    TimetableGenerateSerializer,
+    StudentSubjectEnrollmentSerializer,
+)
+
+
+# ─── Subject ──────────────────────────────────────────────────────────────────
+
+class SubjectListCreateView(generics.ListCreateAPIView):
+    """List all subjects or create a new one. CoE/HOD only for writes."""
+    serializer_class = SubjectSerializer
+    permission_classes = [IsStaff]
+    queryset = Subject.objects.select_related("department").filter(is_active=True)
+    filterset_fields = ["semester", "subject_type", "department", "batch_year"]
+    search_fields = ["code", "name"]
+    ordering_fields = ["semester", "code", "created_at"]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        # CoE sees all subjects
+        if hasattr(user, 'role') and user.role in ('CHIEF_SUPERINTENDENT', 'COE'):
+            return qs
+        # HOD sees only their department's subjects
+        dept = getattr(user, 'hod_department', getattr(user, 'department', None))
+        if dept:
+            qs = qs.filter(department=dept)
+        return qs
+
+    def perform_create(self, serializer):
+        dept = serializer.validated_data.get('department')
+        if not dept:
+            user = self.request.user
+            dept = getattr(user, 'hod_department', getattr(user, 'department', None))
+        serializer.save(department=dept)
+
+
+class SubjectDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """Retrieve, update, or soft-delete a subject."""
+    serializer_class = SubjectSerializer
+    permission_classes = [IsChiefSuperintendent]
+    queryset = Subject.objects.select_related("department")
+
+    def perform_destroy(self, instance):
+        # Soft delete
+        instance.is_active = False
+        instance.save(update_fields=["is_active"])
+
+
+class SubjectEnrolledStudentsView(generics.ListAPIView):
+    """List all students enrolled in a specific subject."""
+    serializer_class = StudentSubjectEnrollmentSerializer
+    permission_classes = [IsStaff]
+    pagination_class = None
+
+    def get_queryset(self):
+        subject_id = self.kwargs.get("pk")
+        qs = StudentSubjectEnrollment.objects.filter(subject_id=subject_id).select_related("student__user", "subject", "exam_session")
+        session_id = self.request.query_params.get("exam_session_id")
+        if session_id:
+            qs = qs.filter(exam_session_id=session_id)
+        else:
+            # Deduplicate: keep only the latest enrollment per student+subject
+            from django.db.models import Subquery, OuterRef
+            latest = StudentSubjectEnrollment.objects.filter(
+                student=OuterRef('student'),
+                subject=OuterRef('subject'),
+            ).order_by('-enrolled_at').values('id')[:1]
+            qs = qs.filter(id__in=Subquery(latest))
+        return qs
+
+
+class SubjectEnrollView(generics.CreateAPIView):
+    """Enroll a single student into a subject."""
+    serializer_class = StudentSubjectEnrollmentSerializer
+    permission_classes = [IsStaff]
+
+    def post(self, request, *args, **kwargs):
+        subject_id = self.kwargs.get("pk")
+        usn = request.data.get("usn")
+        exam_session_id = request.data.get("exam_session_id")
+
+        if not usn:
+            return Response({"error": "USN is required."}, status=status.HTTP_400_BAD_REQUEST)
+            
+        from users.models import Student
+        from scheduling.models import ExamSession
+        
+        try:
+            student = Student.objects.get(usn=usn)
+        except Student.DoesNotExist:
+            return Response(
+                {"error": f"Student with USN {usn} is not registered in the system."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Use specified session, or latest DRAFT, or create a default one
+        exam_session = None
+        if exam_session_id:
+            try:
+                exam_session = ExamSession.objects.get(id=exam_session_id)
+            except ExamSession.DoesNotExist:
+                return Response({"error": "Exam session not found."}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            exam_session = ExamSession.objects.filter(status='DRAFT').order_by('-created_at').first()
+        
+        if not exam_session:
+            # Auto-create a default draft session
+            from datetime import date
+            exam_session = ExamSession.objects.create(
+                name='Default Enrollment Session',
+                academic_year='2026-27',
+                start_date=date.today(),
+                end_date=date.today(),
+                status='DRAFT'
+            )
+
+        # Check if already enrolled
+        exists = StudentSubjectEnrollment.objects.filter(
+            student=student, subject_id=subject_id, exam_session=exam_session
+        ).exists()
+        if exists:
+            return Response({"error": "Student already enrolled in this subject."}, status=status.HTTP_400_BAD_REQUEST)
+
+        data = request.data.copy()
+        data["subject"] = subject_id
+        data["student"] = student.id
+        data["exam_session"] = exam_session.id
+        
+        serializer = self.get_serializer(data=data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
+
+class SubjectBatchEnrollView(generics.GenericAPIView):
+    """Enroll multiple students into a subject at once."""
+    permission_classes = [IsStaff]
+
+    def post(self, request, *args, **kwargs):
+        subject_id = self.kwargs.get("pk")
+        usns = request.data.get("usns", [])
+        exam_session_id = request.data.get("exam_session_id")
+
+        if not usns or not isinstance(usns, list):
+            return Response({"error": "usns must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
+
+        from users.models import Student
+        from scheduling.models import ExamSession
+        from datetime import date
+
+        # Get or create exam session
+        exam_session = None
+        if exam_session_id:
+            try:
+                exam_session = ExamSession.objects.get(id=exam_session_id)
+            except ExamSession.DoesNotExist:
+                return Response({"error": "Exam session not found."}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            exam_session = ExamSession.objects.filter(status='DRAFT').order_by('-created_at').first()
+
+        if not exam_session:
+            exam_session = ExamSession.objects.create(
+                name='Default Enrollment Session',
+                academic_year='2026-27',
+                start_date=date.today(),
+                end_date=date.today(),
+                status='DRAFT'
+            )
+
+        enrolled = []
+        already_enrolled = []
+        not_found = []
+        errors = []
+
+        for usn in usns:
+            try:
+                student = Student.objects.get(usn=usn)
+                exists = StudentSubjectEnrollment.objects.filter(
+                    student=student, subject_id=subject_id, exam_session=exam_session
+                ).exists()
+                if exists:
+                    already_enrolled.append(usn)
+                    continue
+                StudentSubjectEnrollment.objects.create(
+                    student=student,
+                    subject_id=subject_id,
+                    exam_session=exam_session,
+                )
+                enrolled.append(usn)
+            except Student.DoesNotExist:
+                not_found.append(usn)
+            except Exception as e:
+                errors.append({"usn": usn, "error": str(e)})
+
+        return Response({
+            "enrolled": enrolled,
+            "already_enrolled": already_enrolled,
+            "not_found": not_found,
+            "errors": errors,
+            "total_enrolled": len(enrolled),
+        }, status=status.HTTP_201_CREATED)
+
+
+# ─── Room ─────────────────────────────────────────────────────────────────────
+
+class RoomListCreateView(generics.ListCreateAPIView):
+    serializer_class = RoomSerializer
+    permission_classes = [IsStaff]
+    queryset = Room.objects.filter(is_active=True)
+    filterset_fields = ["is_lab", "has_wifi", "building"]
+    search_fields = ["name", "building"]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        # CoE sees all rooms
+        if hasattr(user, 'role') and user.role in ('CHIEF_SUPERINTENDENT', 'COE'):
+            return qs
+        # HOD sees only their department's rooms + shared rooms (department=null)
+        from django.db import models
+        dept = getattr(user, 'hod_department', getattr(user, 'department', None))
+        if dept:
+            qs = qs.filter(models.Q(department=dept) | models.Q(department__isnull=True))
+        return qs
+
+    def perform_create(self, serializer):
+        dept = serializer.validated_data.get('department')
+        if not dept:
+            user = self.request.user
+            dept = getattr(user, 'hod_department', getattr(user, 'department', None))
+        serializer.save(department=dept)
+
+
+class RoomDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = RoomSerializer
+    permission_classes = [IsChiefSuperintendentOrHOD]
+    queryset = Room.objects.all()
+
+    def perform_destroy(self, instance):
+        instance.is_active = False
+        instance.save(update_fields=["is_active"])
+
+
+# ─── ExamSession ─────────────────────────────────────────────────────────────
+
+class ExamSessionListCreateView(generics.ListCreateAPIView):
+    serializer_class = ExamSessionSerializer
+    permission_classes = [IsStaff]
+    filterset_fields = ["status", "semester", "academic_year"]
+
+    def get_queryset(self):
+        qs = ExamSession.objects.select_related("created_by").prefetch_related("timetable_slots")
+        user = self.request.user
+        # CoE: only sees SEE sessions
+        if hasattr(user, 'role') and user.role in ('CHIEF_SUPERINTENDENT', 'COE'):
+            return qs.filter(session_type='SEE')
+        
+        # HOD: sees ALL SEE sessions AND their own CIE sessions
+        from django.db.models import Q
+        return qs.filter(Q(session_type='SEE') | Q(session_type='CIE', created_by=user))
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        # HOD-created sessions are CIE; CoE-created sessions are SEE
+        from .models import ExamSession as ES
+        stype = ES.SessionType.SEE if hasattr(user, 'role') and user.role in ('CHIEF_SUPERINTENDENT', 'COE') else ES.SessionType.CIE
+        serializer.save(created_by=user, session_type=stype)
+
+
+class ExamSessionDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """Retrieve, update, or delete a single ExamSession.
+    HODs can only touch their own CIE sessions; CoE can only touch SEE sessions.
+    """
+    serializer_class = ExamSessionSerializer
+    permission_classes = [IsStaff]
+
+    def get_queryset(self):
+        qs = ExamSession.objects.select_related('created_by').prefetch_related('timetable_slots')
+        user = self.request.user
+        if hasattr(user, 'role') and user.role in ('CHIEF_SUPERINTENDENT', 'COE'):
+            return qs.filter(session_type='SEE')
+        from django.db.models import Q
+        return qs.filter(Q(session_type='SEE') | Q(session_type='CIE', created_by=user))
+
+
+# ─── Timetable ────────────────────────────────────────────────────────────────
+
+class TimetableSlotListView(generics.ListAPIView):
+    """Public read: all staff can view the timetable."""
+    serializer_class = TimetableSlotSerializer
+    permission_classes = [IsStaff]
+    filterset_fields = ["exam_session", "exam_date", "status", "subject", "room"]
+    ordering_fields = ["exam_date", "start_time"]
+
+    def get_queryset(self):
+        return TimetableSlot.objects.select_related(
+            "subject", "room", "exam_session"
+        ).all()
+
+
+class TimetableSlotDetailView(generics.RetrieveDestroyAPIView):
+    """GET/DELETE individual timetable slot. Used for allocation lock/delete."""
+    serializer_class = TimetableSlotSerializer
+    permission_classes = [IsChiefSuperintendentOrHOD]
+    queryset = TimetableSlot.objects.all()
+
+
+@api_view(["POST"])
+@permission_classes([IsChiefSuperintendentOrHOD])
+def trigger_timetable_generation(request):
+    """
+    POST /api/v1/scheduling/timetable/generate/
+
+    Runs the OR-Tools CP-SAT solver SYNCHRONOUSLY (no Redis/Celery required).
+    Persists TimetableSlots directly and returns the result immediately.
+    """
+    import uuid
+    import traceback
+    from .solver import build_schedule_input_from_orm, TimetableSolver
+
+    serializer = TimetableGenerateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    exam_session_id = str(serializer.validated_data["exam_session_id"])
+    time_limit = serializer.validated_data["time_limit_secs"]
+
+    try:
+        session = ExamSession.objects.get(id=exam_session_id)
+    except ExamSession.DoesNotExist:
+        return Response({"error": "ExamSession not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if session.status not in (
+        ExamSession.SessionStatus.DRAFT,
+        ExamSession.SessionStatus.SCHEDULED,
+        ExamSession.SessionStatus.ACTIVE,
+    ):
+        return Response(
+            {"error": f"Cannot generate timetable for session in status '{session.status}'"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+
+    try:
+        schedule_input = build_schedule_input_from_orm(exam_session_id)
+
+        if not schedule_input.subjects:
+            return Response(
+                {"error": "No subjects found for this session. Link subjects to the session first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not schedule_input.rooms:
+            return Response(
+                {"error": "No active rooms found for this department. Create rooms for your department first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not schedule_input.time_slots:
+            return Response(
+                {"error": "No time slots generated. Ensure start_date <= end_date on the session."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        solver = TimetableSolver(schedule_input, time_limit_secs=time_limit)
+        result = solver.solve()
+
+        if not result.success:
+            return Response(
+                {"error": result.error, "solver_status": result.solver_status},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
+        from django.db import transaction
+        with transaction.atomic():
+            TimetableSlot.objects.filter(
+                exam_session_id=exam_session_id,
+                status=TimetableSlot.SlotStatus.SCHEDULED,
+            ).delete()
+
+            slots_to_create = [
+                TimetableSlot(
+                    exam_session_id=exam_session_id,
+                    subject_id=a.subject_id,
+                    room_id=a.room_id,
+                    exam_date=a.time_slot.exam_date,
+                    start_time=a.time_slot.start_time,
+                    end_time=a.time_slot.end_time,
+                    status=TimetableSlot.SlotStatus.SCHEDULED,
+                    solver_score=result.objective_value,
+                )
+                for a in result.assignments
+            ]
+            TimetableSlot.objects.bulk_create(slots_to_create, ignore_conflicts=True)
+
+            saved_slots = TimetableSlot.objects.filter(
+                exam_session_id=exam_session_id,
+                status=TimetableSlot.SlotStatus.SCHEDULED,
+            ).select_related("subject")
+
+            # Randomized invigilator assignment — shuffle and assign, no repeats across overlapping slots
+            import random
+            from users.models import User
+            from users.constants import UserRole
+
+            # HODs are NEVER invigilators. Only FACULTY, INVIGILATOR, EVALUATOR roles.
+            invigilators = list(User.objects.filter(
+                role__in=[UserRole.FACULTY, UserRole.INVIGILATOR, UserRole.EVALUATOR],
+                is_active=True,
+            ))
+            random.shuffle(invigilators)
+
+            # Build a map: subject_id -> coordinator_id (to exclude self-invigilation)
+            subject_coordinator_map = {}
+            for slot in saved_slots:
+                subj = slot.subject
+                if subj.coordinator_id:
+                    subject_coordinator_map[subj.id] = str(subj.coordinator_id)
+
+            # Assign invigilators: track which invigilator is already on duty at each time slot
+            inv_slot_map = {}  # invigilator_id -> set of (date, start_time, end_time)
+            inv_idx = 0
+            duties = []
+            for slot in saved_slots:
+                assigned_inv = None
+                coordinator_id = subject_coordinator_map.get(slot.subject_id)
+                for attempt in range(len(invigilators)):
+                    inv = invigilators[inv_idx % len(invigilators)]
+                    inv_idx += 1
+                    inv_id = str(inv.id)
+                    # Skip: subject's own coordinator cannot invigilate their own exam
+                    if coordinator_id and inv_id == coordinator_id:
+                        continue
+                    slot_key = (slot.exam_date, slot.start_time, slot.end_time)
+                    occupied = inv_slot_map.get(inv_id, set())
+                    if slot_key not in occupied:
+                        assigned_inv = inv
+                        inv_slot_map.setdefault(inv_id, set()).add(slot_key)
+                        break
+                if assigned_inv:
+                    duties.append(InvigilationDuty(
+                        timetable_slot=slot,
+                        invigilator=assigned_inv,
+                        duty_role=InvigilationDuty.DutyRole.CHIEF,
+                    ))
+            if duties:
+                InvigilationDuty.objects.bulk_create(duties, ignore_conflicts=True)
+
+            # Generate seat allocations for each slot
+            from eligibility.models import StudentEligibility
+            from scheduling.models import StudentSubjectEnrollment
+            for slot in saved_slots:
+                # First try to get eligible students from StudentEligibility
+                eligibilities = StudentEligibility.objects.filter(
+                    exam_session_id=exam_session_id,
+                    subject_id=slot.subject_id,
+                    is_eligible=True
+                ).select_related('student')
+                
+                seat_map = {}
+                
+                if eligibilities.exists():
+                    # Use eligibility records
+                    for i, elig in enumerate(eligibilities):
+                        row = (i // 6) + 1
+                        col = (i % 6) + 1
+                        seat_map[elig.student.usn] = f"R{row}-S{col}"
+                else:
+                    # Fallback: use enrolled students for this subject
+                    enrollments = StudentSubjectEnrollment.objects.filter(
+                        subject=slot.subject,
+                        exam_session=slot.exam_session
+                    ).select_related('student')
+                    
+                    for i, enroll in enumerate(enrollments):
+                        row = (i // 6) + 1
+                        col = (i % 6) + 1
+                        seat_map[enroll.student.usn] = f"R{row}-S{col}"
+                
+                slot.seat_map = seat_map
+            
+            TimetableSlot.objects.bulk_update(saved_slots, ['seat_map'])
+
+            fake_task_id = f"sync-{uuid.uuid4().hex[:8]}"
+            session.status = ExamSession.SessionStatus.SCHEDULED
+            session.scheduling_task_id = fake_task_id
+            session.save(update_fields=["status", "scheduling_task_id"])
+
+            # ── Post-processing for CIE ──
+            if 'CIE' in session.name.upper():
+                from scheduling.models import InvigilatorSessionKey
+                from cie.models import CIEConfiguration
+                import uuid as _uuid
+                
+                def _generate_session_key():
+                    return f"CIE-{_uuid.uuid4().hex[:4].upper()}-{_uuid.uuid4().hex[:4].upper()}"
+                
+                keys_to_create = []
+                for duty in duties:
+                    key = InvigilatorSessionKey(
+                        id=_uuid.uuid4(),
+                        duty=duty,
+                        session_key=_generate_session_key(),
+                        is_active=False
+                    )
+                    keys_to_create.append(key)
+                
+                if keys_to_create:
+                    InvigilatorSessionKey.objects.bulk_create(keys_to_create, ignore_conflicts=True)
+                
+                # Update CIEConfiguration dates/times
+                for slot in saved_slots:
+                    CIEConfiguration.objects.filter(
+                        exam_session=session, 
+                        subject=slot.subject
+                    ).update(
+                        scheduled_date=slot.exam_date,
+                        scheduled_time=slot.start_time
+                    )
+
+        # Build seat map data for response
+        seat_data = []
+        for slot in saved_slots:
+            seat_data.append({
+                "subject_code": slot.subject.code,
+                "subject_name": slot.subject.name,
+                "room_name": slot.room.name if slot.room else "Unassigned",
+                "room_capacity": slot.room.exam_capacity if slot.room else 0,
+                "seat_map": slot.seat_map or {},
+                "exam_date": slot.exam_date.isoformat() if slot.exam_date else None,
+                "start_time": slot.start_time.isoformat() if slot.start_time else None,
+                "end_time": slot.end_time.isoformat() if slot.end_time else None,
+            })
+
+        return Response(
+            {
+                "success": True,
+                "task_id": fake_task_id,
+                "sync": True,
+                "ready": True,
+                "message": f"Timetable generated for '{session.name}' in {round(result.wall_time_secs, 2)}s.",
+                "result": {
+                    "success": True,
+                    "slots_created": len(slots_to_create),
+                    "solver_status": result.solver_status,
+                    "wall_time_secs": round(result.wall_time_secs, 3),
+                    "objective_value": result.objective_value,
+                },
+                "seat_data": seat_data,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    except Exception as exc:
+        return Response(
+            {"error": str(exc), "detail": traceback.format_exc()},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@api_view(["GET"])
+@permission_classes([IsChiefSuperintendentOrHOD])
+def seating_blueprint(request):
+    """
+    GET /api/v1/scheduling/seating-blueprint/?exam_session=<uuid>&room=<uuid>
+    Returns the full seating blueprint with real student data.
+    """
+    exam_session_id = request.query_params.get("exam_session")
+    room_id = request.query_params.get("room")
+
+    if not exam_session_id:
+        return Response({"error": "exam_session parameter is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    from eligibility.models import StudentEligibility, HallTicket
+    from users.models import Student
+
+    # Get all timetable slots for this session
+    slots_qs = TimetableSlot.objects.filter(
+        exam_session_id=exam_session_id
+    ).select_related("subject", "room")
+
+    if room_id:
+        slots_qs = slots_qs.filter(room_id=room_id)
+
+    # Build seating data per room
+    rooms_data = {}
+    for slot in slots_qs:
+        room_name = slot.room.name if slot.room else "Unassigned"
+        if room_name not in rooms_data:
+            rooms_data[room_name] = {
+                "room_name": room_name,
+                "room_id": str(slot.room.id) if slot.room else None,
+                "capacity": slot.room.exam_capacity if slot.room else 0,
+                "subjects": [],
+                "seats": [],
+            }
+
+        subject_info = {
+            "subject_code": slot.subject.code,
+            "subject_name": slot.subject.name,
+        }
+        rooms_data[room_name]["subjects"].append(subject_info)
+
+        # Get students assigned to this slot via seat_map
+        seat_map = slot.seat_map or {}
+        for usn, seat_label in seat_map.items():
+            try:
+                student = Student.objects.select_related('user', 'department').get(usn=usn)
+                rooms_data[room_name]["seats"].append({
+                    "usn": usn,
+                    "student_name": student.user.full_name,
+                    "semester": student.current_semester,
+                    "department": student.department.name if student.department else "Unknown",
+                    "subject_code": slot.subject.code,
+                    "subject_name": slot.subject.name,
+                    "seat": seat_label,
+                    "slot_id": str(slot.id),
+                })
+            except Student.DoesNotExist:
+                rooms_data[room_name]["seats"].append({
+                    "usn": usn,
+                    "student_name": f"Student ({usn})",
+                    "semester": None,
+                    "department": "Unknown",
+                    "subject_code": slot.subject.code,
+                    "subject_name": slot.subject.name,
+                    "seat": seat_label,
+                    "slot_id": str(slot.id),
+                })
+
+    return Response({
+        "exam_session_id": exam_session_id,
+        "rooms": list(rooms_data.values()),
+    })
+@api_view(["GET"])
+@permission_classes([IsChiefSuperintendentOrHOD])
+def timetable_task_status(request, task_id: str):
+    """
+    GET /api/v1/scheduling/timetable/status/<task_id>/
+    Poll the status of a running OR-Tools Celery task.
+    """
+    task_result = AsyncResult(task_id)
+    return Response(
+        {
+            "task_id": task_id,
+            "status": task_result.status,
+            "ready": task_result.ready(),
+            "result": task_result.result if task_result.ready() else None,
+        }
+    )
+
+
+# ─── Invigilation ─────────────────────────────────────────────────────────────
+
+class InvigilationDutyListCreateView(generics.ListCreateAPIView):
+    serializer_class = InvigilationDutySerializer
+    permission_classes = [IsStaff]
+    filterset_fields = ["timetable_slot", "invigilator", "duty_role"]
+
+    def get_queryset(self):
+        qs = InvigilationDuty.objects.select_related(
+            "invigilator", "timetable_slot__subject", "timetable_slot__room"
+        )
+        
+        exam_session = self.request.query_params.get("timetable_slot__exam_session")
+        if exam_session:
+            qs = qs.filter(timetable_slot__exam_session_id=exam_session)
+
+        my_duties = self.request.query_params.get("my_duties")
+        if my_duties and my_duties.lower() == 'true':
+            qs = qs.filter(invigilator=self.request.user)
+
+        return qs
+
+
+class AllocationSaveView(generics.GenericAPIView):
+    """Save AI allocation results: creates TimetableSlots and InvigilationDuties."""
+    permission_classes = [IsChiefSuperintendentOrHOD]
+
+    def post(self, request, *args, **kwargs):
+        exam_session_id = request.data.get("exam_session_id")
+        allocations = request.data.get("allocations", [])
+
+        if not exam_session_id:
+            return Response({"error": "exam_session_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            exam_session = ExamSession.objects.get(id=exam_session_id)
+        except ExamSession.DoesNotExist:
+            return Response({"error": "Exam session not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        created_slots = 0
+        created_duties = 0
+        errors = []
+
+        for alloc in allocations:
+            subject_code = alloc.get("subject_code")
+            room_name = alloc.get("room_name")
+            exam_date = alloc.get("exam_date")
+            start_time = alloc.get("start_time")
+            end_time = alloc.get("end_time")
+            chief_email = alloc.get("chief_invigilator_email")
+            reliever_email = alloc.get("reliever_invigilator_email")
+
+            try:
+                subject = Subject.objects.get(code=subject_code)
+                room = Room.objects.get(name=room_name)
+            except (Subject.DoesNotExist, Room.DoesNotExist) as e:
+                errors.append(f"Subject {subject_code} or Room {room_name} not found: {str(e)}")
+                continue
+
+            # Create or get TimetableSlot
+            slot, created = TimetableSlot.objects.get_or_create(
+                exam_session=exam_session,
+                subject=subject,
+                room=room,
+                exam_date=exam_date,
+                start_time=start_time,
+                defaults={
+                    "end_time": end_time,
+                    "status": "CONFIRMED",
+                }
+            )
+            if created:
+                created_slots += 1
+
+            # Create Chief InvigilationDuty
+            if chief_email:
+                from users.models import User as UserModel
+                try:
+                    chief = UserModel.objects.get(email=chief_email)
+                    InvigilationDuty.objects.get_or_create(
+                        timetable_slot=slot,
+                        invigilator=chief,
+                        defaults={"duty_role": "CHIEF"}
+                    )
+                    created_duties += 1
+                except UserModel.DoesNotExist:
+                    errors.append(f"Chief invigilator {chief_email} not found")
+
+            # Create Reliever InvigilationDuty
+            if reliever_email:
+                from users.models import User as UserModel
+                try:
+                    reliever = UserModel.objects.get(email=reliever_email)
+                    InvigilationDuty.objects.get_or_create(
+                        timetable_slot=slot,
+                        invigilator=reliever,
+                        defaults={"duty_role": "RELIEF"}
+                    )
+                    created_duties += 1
+                except UserModel.DoesNotExist:
+                    errors.append(f"Reliever invigilator {reliever_email} not found")
+
+        return Response({
+            "created_slots": created_slots,
+            "created_duties": created_duties,
+            "errors": errors,
+            "message": f"Saved {created_slots} timetable slots and {created_duties} invigilation duties.",
+        }, status=status.HTTP_201_CREATED)
+
+
+from rest_framework.views import APIView
+from .models import InvigilatorSessionKey
+from .serializers import InvigilatorSessionKeySerializer
+
+class InvigilatorSessionKeyView(APIView):
+    """
+    GET /scheduling/invigilator-keys/?duty_id=<id>
+    POST /scheduling/invigilator-keys/
+    """
+    permission_classes = [IsStaff]
+
+    def get(self, request):
+        duty_id = request.query_params.get("duty_id")
+        if duty_id:
+            keys = InvigilatorSessionKey.objects.filter(duty_id=duty_id)
+        else:
+            keys = InvigilatorSessionKey.objects.all()
+            
+        serializer = InvigilatorSessionKeySerializer(keys, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        duty_id = request.data.get("duty_id")
+        if not duty_id:
+            return Response({"error": "duty_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+            
+        try:
+            duty = InvigilationDuty.objects.get(id=duty_id)
+        except InvigilationDuty.DoesNotExist:
+            return Response({"error": "InvigilationDuty not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Check if a key already exists for this duty
+        existing = InvigilatorSessionKey.objects.filter(duty=duty).first()
+        if existing:
+            serializer = InvigilatorSessionKeySerializer(existing)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        import string
+        from django.utils.crypto import get_random_string
+        
+        while True:
+            code = get_random_string(length=6, allowed_chars=string.ascii_uppercase + string.digits)
+            if not InvigilatorSessionKey.objects.filter(session_key=code).exists():
+                break
+
+        key_obj = InvigilatorSessionKey.objects.create(
+            duty=duty,
+            session_key=code,
+            is_active=True
+        )
+
+        serializer = InvigilatorSessionKeySerializer(key_obj)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class InvigilatorSessionKeyActivateView(APIView):
+    """
+    POST /scheduling/invigilator-keys/activate/
+    Activates an invigilation session using a 6-digit code.
+    Validates that the session key is within its valid time window.
+    """
+    permission_classes = [IsStaff]
+
+    def post(self, request):
+        code = request.data.get("session_code") or request.data.get("session_key")
+        if not code:
+            return Response({"error": "session_key is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            key_obj = InvigilatorSessionKey.objects.select_related(
+                'duty__timetable_slot'
+            ).get(session_key=code)
+        except InvigilatorSessionKey.DoesNotExist:
+            return Response({"error": "Invalid session key."}, status=status.HTTP_404_NOT_FOUND)
+
+        if key_obj.closed_at is not None:
+            return Response({"error": "This session key has been closed and deactivated."}, status=status.HTTP_400_BAD_REQUEST)
+
+        from django.utils import timezone
+        
+        now = timezone.now()
+        slot = key_obj.duty.timetable_slot
+        if slot.exam_date and slot.start_time and slot.end_time:
+            from datetime import datetime as _dt, time as _time, timedelta
+            slot_start = _dt.combine(slot.exam_date, slot.start_time)
+            slot_end = _dt.combine(slot.exam_date, slot.end_time)
+            # Make timezone-aware using the same timezone as now
+            if timezone.is_naive(slot_start):
+                slot_start = timezone.make_aware(slot_start, timezone.get_current_timezone())
+            if timezone.is_naive(slot_end):
+                slot_end = timezone.make_aware(slot_end, timezone.get_current_timezone())
+            
+            if slot.end_time < slot.start_time:
+                slot_end = slot_end + timedelta(days=1)
+
+            # Allow activation from 30 minutes before start until end
+            if now < slot_start - timedelta(minutes=30):
+                return Response({
+                    "error": f"This exam session starts at {slot.start_time.strftime('%H:%M')}. You can activate it up to 30 minutes before.",
+                    "exam_date": slot.exam_date.isoformat(),
+                    "start_time": slot.start_time.isoformat(),
+                }, status=status.HTTP_400_BAD_REQUEST)
+            if now > slot_end:
+                return Response({
+                    "error": "This exam session has ended.",
+                    "exam_date": slot.exam_date.isoformat(),
+                    "end_time": slot.end_time.isoformat(),
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+        if not key_obj.is_active:
+            key_obj.is_active = True
+            key_obj.activated_at = timezone.now()
+            key_obj.save(update_fields=['is_active', 'activated_at'])
+
+        # Get assigned students for this slot
+        from .models import StudentExamAttendance, ExamIncidentReport
+        seat_map = slot.seat_map or {}
+        
+        student_data_list = []
+        for usn, seat_coord in seat_map.items():
+            # Ensure attendance record exists
+            try:
+                from users.models import Student
+                student_obj = Student.objects.get(usn=usn)
+                att, created = StudentExamAttendance.objects.get_or_create(
+                    timetable_slot=slot,
+                    student=student_obj,
+                    defaults={
+                        'desk_id': f"Desk {seat_coord}",
+                        'seat_position': seat_coord
+                    }
+                )
+                student_data_list.append({
+                    "deskId": att.desk_id,
+                    "usn": att.student.usn,
+                    "studentName": att.student.user.full_name,
+                    "courseCode": slot.subject.code,
+                    "seatPosition": att.seat_position,
+                    "isQrVerified": att.is_qr_verified,
+                    "isBiometricMatched": att.is_biometric_matched,
+                    "status": att.status,
+                    "bookletBarcode": att.booklet_barcode,
+                    "dummyBarcode": att.dummy_barcode,
+                    "digitizedPagesCount": att.digitized_pages_count,
+                    "avatarInitials": "".join([part[0] for part in att.student.user.full_name.split() if part])[:2].upper(),
+                })
+            except Exception:
+                continue
+
+        # Get incidents
+        incidents_qs = ExamIncidentReport.objects.filter(timetable_slot=slot).select_related('student', 'student__user')
+        incident_list = []
+        for inc in incidents_qs:
+            incident_list.append({
+                "id": str(inc.id),
+                "deskId": inc.student.exam_attendances.filter(timetable_slot=slot).first().desk_id if inc.student.exam_attendances.filter(timetable_slot=slot).exists() else "Unknown",
+                "studentUsn": inc.student.usn,
+                "studentName": inc.student.user.full_name,
+                "infractionType": inc.infraction_type,
+                "description": inc.description,
+                "timestamp": inc.timestamp.strftime("%I:%M %p"),
+                "isBroadcastedToCoE": inc.is_broadcasted_to_coe,
+            })
+
+        response_data = {
+            "sessionId": code,
+            "hallNumber": slot.room.name if slot.room else 'TBA',
+            "courseCode": slot.subject.code,
+            "courseTitle": slot.subject.name,
+            "examDate": slot.exam_date.isoformat() if slot.exam_date else "",
+            "timeSlot": f"{slot.start_time.strftime('%H:%M') if slot.start_time else 'TBA'} - {slot.end_time.strftime('%H:%M') if slot.end_time else 'TBA'}",
+            "chiefInvigilatorName": key_obj.duty.invigilator.full_name,
+            "students": student_data_list,
+            "incidents": incident_list
+        }
+
+        return Response(response_data, status=status.HTTP_200_OK)
+
+
+class MarkAttendanceView(APIView):
+    """
+    POST /scheduling/invigilator/mark-attendance/
+    Marks a student as present using their USN and the active session key.
+    """
+    permission_classes = [IsStaff]
+
+    def post(self, request):
+        code = request.data.get("session_key")
+        usn = request.data.get("usn")
+
+        if not code or not usn:
+            return Response({"error": "session_key and usn are required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            key_obj = InvigilatorSessionKey.objects.select_related('duty__timetable_slot').get(session_key=code)
+        except InvigilatorSessionKey.DoesNotExist:
+            return Response({"error": "Invalid session key."}, status=status.HTTP_404_NOT_FOUND)
+
+        if key_obj.closed_at is not None:
+            return Response({"error": "This session key has been closed."}, status=status.HTTP_400_BAD_REQUEST)
+        if not key_obj.is_active:
+            return Response({"error": "This session key is not active yet. Please activate it first."}, status=status.HTTP_400_BAD_REQUEST)
+
+        slot = key_obj.duty.timetable_slot
+        seat_map = slot.seat_map or {}
+        
+        if usn not in seat_map:
+            return Response({"error": "Student is not assigned to this exam hall."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Allow attendance marking up to 30 minutes after exam starts
+        if slot.exam_date and slot.start_time:
+            from datetime import datetime, timedelta
+            from django.utils import timezone
+            exam_start = timezone.make_aware(datetime.combine(slot.exam_date, slot.start_time))
+            if timezone.now() > exam_start + timedelta(minutes=30):
+                return Response({"error": "Attendance marking window closed (30 min after start time)."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Update the StudentExamAttendance record
+        from .models import StudentExamAttendance
+        from users.models import Student
+        
+        try:
+            student = Student.objects.get(usn=usn)
+            att, created = StudentExamAttendance.objects.get_or_create(
+                timetable_slot=slot,
+                student=student,
+                defaults={
+                    'desk_id': f"Desk {seat_map[usn]}",
+                    'seat_position': seat_map[usn]
+                }
+            )
+            att.is_qr_verified = True
+            att.is_biometric_matched = True
+            att.status = 'present'
+            att.save()
+        except Student.DoesNotExist:
+            return Response({"error": "Student not found."}, status=status.HTTP_404_NOT_FOUND)
+        
+        return Response({
+            "message": "Attendance marked successfully",
+            "usn": usn,
+            "status": "PRESENT"
+        }, status=status.HTTP_200_OK)

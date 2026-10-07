@@ -28,6 +28,7 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
 }) => {
   const [section, setSection] = useState<string>(question?.section || defaultSection);
   const [number, setNumber] = useState<number>(question?.number || nextNumber);
+  const [part, setPart] = useState<string>(question?.part || '');
   const [text, setText] = useState<string>(question?.text || '');
   const [marks, setMarks] = useState<number>(question?.marks || 10);
   const [bloomsLevel, setBloomsLevel] = useState<BloomsLevel>(question?.bloomsLevel || 'Understand');
@@ -44,6 +45,7 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
     const updatedQuestion: QuestionItem = {
       id: question?.id || `q_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
       number,
+      part: part.trim() || undefined,
       section,
       text: text.trim(),
       marks: Number(marks),
@@ -142,7 +144,7 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
         {/* Form Body */}
         <form onSubmit={handleFormSubmit} style={{ padding: '26px 30px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
           {/* Row 1: Section, Question Number, Marks */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr', gap: '14px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr 1fr 1fr', gap: '14px' }}>
             <div>
               <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, color: 'var(--color-text-primary)', marginBottom: '6px' }}>
                 Section Block
@@ -173,6 +175,19 @@ export const QuestionEditorModal: React.FC<QuestionEditorModalProps> = ({
                 required
               />
             </div>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, color: 'var(--color-text-primary)', marginBottom: '6px' }}>
+                  Part (e.g. a, b)
+                </label>
+                <input
+                  type="text"
+                  maxLength={3}
+                  value={part}
+                  onChange={e => setPart(e.target.value)}
+                  placeholder="Optional"
+                  style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1.5px solid var(--color-border)', fontSize: '0.85rem', fontWeight: 700, boxSizing: 'border-box' }}
+                />
+              </div>
 
             <div>
               <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, color: 'var(--color-text-primary)', marginBottom: '6px' }}>

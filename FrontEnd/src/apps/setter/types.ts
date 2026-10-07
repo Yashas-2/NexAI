@@ -3,6 +3,7 @@ export type BloomsLevel = 'Remember' | 'Understand' | 'Apply' | 'Analyze' | 'Eva
 export interface QuestionItem {
   id: string;
   number: number;
+  part?: string;
   section: string; // e.g. "Part A", "Part B", "Part C"
   text: string;
   marks: number;
