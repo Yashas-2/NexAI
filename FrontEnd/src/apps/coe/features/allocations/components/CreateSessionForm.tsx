@@ -57,6 +57,30 @@ export const CreateSessionForm: React.FC<CreateSessionFormProps> = ({
     );
   };
 
+  const formatTimeTo24 = (timeStr: string): string => {
+  if (!timeStr) return "09:00";
+  const trimmed = timeStr.trim();
+  const match = trimmed.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!match) return trimmed;
+  let h = parseInt(match[1], 10);
+  const m = match[2];
+  const period = match[3].toUpperCase();
+  if (period === "PM" && h < 12) h += 12;
+  if (period === "AM" && h === 12) h = 0;
+  return `${String(h).padStart(2, "0")}:${m}`;
+};
+
+const formatTimeTo12 = (time24: string): string => {
+  if (!time24) return "09:00 AM";
+  const [hStr, mStr] = time24.split(":");
+  if (!hStr || !mStr) return time24;
+  let h = parseInt(hStr, 10);
+  if (isNaN(h)) return time24;
+  const period = h >= 12 ? "PM" : "AM";
+  const h12 = h > 12 ? h - 12 : h === 0 ? 12 : h;
+  return `${String(h12).padStart(2, "0")}:${mStr} ${period}`;
+};
+
   const inputStyle = {
     width: '100%',
     padding: '10px 14px',

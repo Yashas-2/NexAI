@@ -53,6 +53,6 @@ urlpatterns = [
 
     # Session Keys
     path("invigilator-keys/",         InvigilatorSessionKeyView.as_view(), name="invigilator-key-list"),
-    path("invigilator-keys/<uuid:pk>/activate/", InvigilatorSessionKeyActivateView.as_view(), name="invigilator-key-activate"),
+    path("invigilator-keys/activate/", InvigilatorSessionKeyActivateView.as_view(), name="invigilator-key-activate"),
     path("invigilator/mark-attendance/", MarkAttendanceView.as_view(), name="mark-attendance"),
 ]

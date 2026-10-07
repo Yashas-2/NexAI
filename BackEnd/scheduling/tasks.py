@@ -126,6 +126,10 @@ def generate_timetable(self, exam_session_id: str, time_limit_secs: int = 120) -
         session.status = ExamSession.SessionStatus.SCHEDULED
         session.save(update_fields=["status"])
 
+        # Automatically generate hall tickets (digital access) so students can view the CIE schedule
+        from eligibility.tasks import generate_hall_tickets_for_session
+        generate_hall_tickets_for_session.delay(str(session.id))
+
         logger.info(
             "Timetable generation complete: %d slots created for session %s (%.2fs)",
             len(slots_to_create),

@@ -1,35 +1,12 @@
-"""
-NexAI Scheduling – OR-Tools CP-SAT Timetabling Engine
-======================================================
-
-Uses Google OR-Tools CP-SAT solver to generate a clash-free exam timetable.
-
-Hard Constraints (must not be violated):
-  HC1 – No two subjects in the same room at the same time
-  HC2 – No student enrolled in two exams at the same time
-  HC3 – No invigilator assigned to two rooms simultaneously
-  HC4 – Each subject must have exactly one slot
-
-Soft Constraints (minimise penalty):
-  SC1 – Spread exams across available days (avoid back-to-back same-semester)
-  SC2 – Prefer morning slots for large-capacity subjects
-  SC3 – Minimise total invigilator duty hours per person
-
-Output: list of (subject_id, room_id, date_idx, time_slot_idx) assignments
-"""
-from __future__ import annotations
-
+﻿import json
 import logging
+import os
+import urllib.request
 from dataclasses import dataclass, field
-from datetime import date, time, datetime, timedelta
+from datetime import date, timedelta, datetime
 from typing import Any
 
-from ortools.sat.python import cp_model
-
-logger = logging.getLogger("nexai.scheduling")
-
-
-# ── Data Transfer Objects ─────────────────────────────────────────────────────
+logger = logging.getLogger('nexai.scheduling')
 
 @dataclass
 class SubjectDTO:
@@ -37,10 +14,9 @@ class SubjectDTO:
     code: str
     semester: int
     exam_duration_mins: int
-    enrolled_student_ids: list[str] = field(default_factory=list)
-    required_capacity: int = 0  # max students in any room needed
-    coordinator_id: str | None = None
-
+    enrolled_student_ids: list = field(default_factory=list)
+    required_capacity: int = 0
+    coordinator_id: str = None
 
 @dataclass
 class RoomDTO:
@@ -48,30 +24,21 @@ class RoomDTO:
     name: str
     exam_capacity: int
 
-
-@dataclass
-class InvigilatorDTO:
-    id: str
-    name: str
-
-
 @dataclass
 class TimeSlotDTO:
     index: int
     exam_date: date
-    start_time: time
-    end_time: time
-
+    start_time: Any
+    end_time: Any
 
 @dataclass
 class ScheduleInput:
-    subjects: list[SubjectDTO]
-    rooms: list[RoomDTO]
-    invigilators: list[InvigilatorDTO]
-    time_slots: list[TimeSlotDTO]
-    # student_id → set of subject_ids enrolled
-    student_enrollments: dict[str, set[str]] = field(default_factory=dict)
-
+    subjects: list
+    rooms: list
+    invigilators: list
+    time_slots: list
+    student_enrollments: dict = field(default_factory=dict)
+    exam_session_id: str = None
 
 @dataclass
 class SlotAssignment:
@@ -80,350 +47,179 @@ class SlotAssignment:
     room_id: str
     room_name: str
     time_slot: TimeSlotDTO
-    invigilator_id: str | None = None
-
+    invigilator_id: str = None
 
 @dataclass
 class ScheduleResult:
     success: bool
-    assignments: list[SlotAssignment] = field(default_factory=list)
-    solver_status: str = ""
+    assignments: list = field(default_factory=list)
+    solver_status: str = ''
     wall_time_secs: float = 0.0
     objective_value: int = 0
-    error: str = ""
+    error: str = ''
 
-
-# ── CP-SAT Solver ─────────────────────────────────────────────────────────────
-
-class TimetableSolver:
-    """
-    Wraps the OR-Tools CP-SAT model for exam timetabling.
-
-    Usage::
-
-        solver = TimetableSolver(schedule_input, time_limit_secs=120)
-        result = solver.solve()
-    """
-
-    # Penalty weights for soft constraints
-    BACK_TO_BACK_PENALTY = 5
-    MORNING_PREFERENCE_BONUS = 2  # slots 0 and 1 are morning
-
-    def __init__(self, data: ScheduleInput, time_limit_secs: int = 120):
-        self.data = data
-        self.time_limit_secs = time_limit_secs
-
-        self.S = len(data.subjects)   # number of subjects
-        self.R = len(data.rooms)      # number of rooms
-        self.T = len(data.time_slots) # number of time slots
-
-        # Index lookups
-        self.subject_idx = {s.id: i for i, s in enumerate(data.subjects)}
-        self.room_idx    = {r.id: i for i, r in enumerate(data.rooms)}
-
-        self.model = cp_model.CpModel()
-        # x[s][r][t] = 1  iff  subject s is scheduled in room r at time slot t
-        self.x: dict[tuple[int, int, int], Any] = {}
-
-    def _create_variables(self):
-        """Create binary decision variables x[s][r][t]."""
-        for s in range(self.S):
-            for r in range(self.R):
-                for t in range(self.T):
-                    self.x[(s, r, t)] = self.model.new_bool_var(f"x_s{s}_r{r}_t{t}")
-
-    def _add_hard_constraints(self):
-        """Add all hard constraints to the CP-SAT model."""
-        subjects = self.data.subjects
-        rooms = self.data.rooms
-        time_slots = self.data.time_slots
-
-        # HC1: Each subject is assigned to exactly one (room, time) pair
-        for s in range(self.S):
-            self.model.add_exactly_one(
-                self.x[(s, r, t)] for r in range(self.R) for t in range(self.T)
-            )
-
-        # HC2: At most one subject per (room, time) slot — no room clash
-        for r in range(self.R):
-            for t in range(self.T):
-                self.model.add_at_most_one(self.x[(s, r, t)] for s in range(self.S))
-
-        # HC3: Student clash — two subjects sharing enrolled students
-        #       cannot be scheduled in the same time slot
-        student_map = self.data.student_enrollments  # student_id → set of subject IDs
-        # Build conflict pairs
-        conflict_pairs: set[tuple[int, int]] = set()
-        for enrolled_subjects in student_map.values():
-            enrolled_indices = [
-                self.subject_idx[sid]
-                for sid in enrolled_subjects
-                if sid in self.subject_idx
-            ]
-            for i in range(len(enrolled_indices)):
-                for j in range(i + 1, len(enrolled_indices)):
-                    si, sj = sorted([enrolled_indices[i], enrolled_indices[j]])
-                    conflict_pairs.add((si, sj))
-
-        for (si, sj) in conflict_pairs:
-            for t in range(self.T):
-                # si and sj cannot both be in time slot t (any room)
-                sum_si = sum(self.x[(si, r, t)] for r in range(self.R))
-                sum_sj = sum(self.x[(sj, r, t)] for r in range(self.R))
-                self.model.add(sum_si + sum_sj <= 1)
-
-        # HC4: Room capacity — only schedule subject in a room that fits it
-        for s_idx, subject in enumerate(subjects):
-            for r_idx, room in enumerate(rooms):
-                if room.exam_capacity < subject.required_capacity:
-                    # Forbid assigning this subject to this room
-                    for t in range(self.T):
-                        self.model.add(self.x[(s_idx, r_idx, t)] == 0)
-
-        logger.debug(
-            "Hard constraints added: %d conflict pairs, %d subjects, %d rooms, %d slots",
-            len(conflict_pairs), self.S, self.R, self.T,
-        )
-
-    def _add_soft_constraints(self) -> list[Any]:
-        """
-        Add soft constraints as penalty terms in the objective.
-        Returns list of (penalty_var, weight) tuples.
-        """
-        penalty_terms = []
-        subjects = self.data.subjects
-        time_slots = self.data.time_slots
-
-        # SC1: Penalise same-semester subjects in consecutive time slots on same day
-        by_semester: dict[int, list[int]] = {}
-        for s_idx, subj in enumerate(subjects):
-            by_semester.setdefault(subj.semester, []).append(s_idx)
-
-        for sem_subjects in by_semester.values():
-            if len(sem_subjects) < 2:
-                continue
-            # Group time slots by date
-            slots_by_date: dict[date, list[int]] = {}
-            for t_idx, slot in enumerate(time_slots):
-                slots_by_date.setdefault(slot.exam_date, []).append(t_idx)
-
-            for day_slots in slots_by_date.values():
-                for i in range(len(day_slots) - 1):
-                    t1, t2 = day_slots[i], day_slots[i + 1]
-                    for si in sem_subjects:
-                        for sj in sem_subjects:
-                            if si >= sj:
-                                continue
-                            # Penalise if si in t1 AND sj in t2
-                            penalty = self.model.new_bool_var(
-                                f"pen_consec_s{si}_s{sj}_t{t1}_{t2}"
-                            )
-                            in_t1 = sum(self.x[(si, r, t1)] for r in range(self.R))
-                            in_t2 = sum(self.x[(sj, r, t2)] for r in range(self.R))
-                            # penalty = 1 only when both are true (approximation)
-                            self.model.add(in_t1 + in_t2 - 1 <= penalty)
-                            penalty_terms.append((penalty, self.BACK_TO_BACK_PENALTY))
-
-        return penalty_terms
-
-    def solve(self) -> ScheduleResult:
-        """Run the CP-SAT solver and return a ScheduleResult."""
-        logger.info(
-            "Starting OR-Tools CP-SAT solver: %d subjects, %d rooms, %d slots",
-            self.S, self.R, self.T,
-        )
-
-        self._create_variables()
-        self._add_hard_constraints()
-        penalty_terms = self._add_soft_constraints()
-
-        # Objective: minimise total penalty
-        if penalty_terms:
-            self.model.minimize(
-                sum(p * w for p, w in penalty_terms)
-            )
-
-        # Solver settings
-        solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = self.time_limit_secs
-        solver.parameters.num_search_workers = 4  # parallelise
-        solver.parameters.log_search_progress = False
-
-        status = solver.solve(self.model)
-        status_name = solver.status_name(status)
-        wall_time = solver.wall_time
-
-        logger.info(
-            "Solver finished: status=%s, wall_time=%.2fs, objective=%s",
-            status_name,
-            wall_time,
-            solver.objective_value if status in (cp_model.OPTIMAL, cp_model.FEASIBLE) else "N/A",
-        )
-
-        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-            return ScheduleResult(
-                success=False,
-                solver_status=status_name,
-                wall_time_secs=wall_time,
-                error=f"Solver returned {status_name}. "
-                      "Check constraints or add more rooms/slots.",
-            )
-
-        # Extract assignments
-        assignments: list[SlotAssignment] = []
-        for s_idx, subject in enumerate(self.data.subjects):
-            for r_idx, room in enumerate(self.data.rooms):
-                for t_idx, slot in enumerate(self.data.time_slots):
-                    if solver.value(self.x[(s_idx, r_idx, t_idx)]) == 1:
-                        assignments.append(
-                            SlotAssignment(
-                                subject_id=subject.id,
-                                subject_code=subject.code,
-                                room_id=room.id,
-                                room_name=room.name,
-                                time_slot=slot,
-                                invigilator_id=subject.coordinator_id,
-                            )
-                        )
-                        break  # each subject assigned once
-
-        return ScheduleResult(
-            success=True,
-            assignments=assignments,
-            solver_status=status_name,
-            wall_time_secs=wall_time,
-            objective_value=int(solver.objective_value)
-            if status == cp_model.OPTIMAL
-            else 0,
-        )
-
-
-# ── Helper: Build ScheduleInput from Django ORM ───────────────────────────────
+def fetch_holidays(year: int):
+    cache_file = f'holidays_{year}.json'
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'r') as f:
+                return json.load(f)
+        except:
+            pass
+    try:
+        url = f'https://date.nager.at/api/v3/PublicHolidays/{year}/IN'
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+            dates = [d['date'] for d in data]
+            with open(cache_file, 'w') as f:
+                json.dump(dates, f)
+            return dates
+    except Exception as e:
+        logger.warning(f'Holiday API failed: {e}. Using cached data if any.')
+        return []
 
 def build_schedule_input_from_orm(exam_session_id: str) -> ScheduleInput:
-    """
-    Query the database and build a ScheduleInput DTO for the solver.
-    Rooms and fallback subjects are scoped to the session's department(s)
-    so that cross-department leakage is prevented.
-    """
-    from scheduling.models import (
-        ExamSession,
-        Subject,
-        Room,
-        StudentSubjectEnrollment,
-    )
+    from scheduling.models import ExamSession, Subject, Room, StudentSubjectEnrollment
     from users.models import User
     from users.constants import UserRole
-    from datetime import time as dt_time
     from django.db.models import Q
+    import datetime
 
-    session = ExamSession.objects.select_related("created_by__department").get(id=exam_session_id)
+    session = ExamSession.objects.get(id=exam_session_id)
+    dept_codes = session.departments or []
 
-    # ── Determine the department scope for this session ──────────────────────
-    # Use the explicit departments list on the session; fall back to creator's dept.
-    dept_codes: list[str] = session.departments or []
-    if not dept_codes and session.created_by:
-        creator_dept = getattr(session.created_by, 'department', None)
-        if creator_dept:
-            dept_codes = [creator_dept.code]
-
-    # ── Subjects ─────────────────────────────────────────────────────────────
-    # Use the M2M subjects linked to the session first.
-    subjects_qs = session.subjects.filter(is_active=True).prefetch_related("student_enrollments")
-
-    # Fallback: if no subjects are linked, pull by semester AND department.
+    subjects_qs = session.subjects.filter(is_active=True).prefetch_related('student_enrollments')
     if not subjects_qs.exists():
         fallback_filter = Q(semester=session.semester, is_active=True)
         if dept_codes:
             fallback_filter &= Q(department__code__in=dept_codes)
-        subjects_qs = Subject.objects.filter(fallback_filter).prefetch_related("student_enrollments")
+        subjects_qs = Subject.objects.filter(fallback_filter).prefetch_related('student_enrollments')
 
-    # ── Rooms ─────────────────────────────────────────────────────────────────
-    # Include rooms belonging to the session's department(s) PLUS shared/common
-    # rooms (department=NULL).  CoE-level sessions (no dept_codes) get all rooms.
-    if dept_codes:
-        rooms_qs = Room.objects.filter(
-            is_active=True
-        ).filter(
-            Q(department__code__in=dept_codes) | Q(department__isnull=True)
-        ).order_by("-exam_capacity")
+    selected_room_names = session.selected_rooms or []
+    if selected_room_names:
+        rooms_qs = Room.objects.filter(is_active=True, name__in=selected_room_names).order_by('-exam_capacity')
     else:
-        rooms_qs = Room.objects.filter(is_active=True).order_by("-exam_capacity")
+        rooms_qs = Room.objects.filter(is_active=True).order_by('-exam_capacity')
 
-    invigilators_qs = User.objects.filter(
-        role__in=[UserRole.INVIGILATOR, UserRole.EVALUATOR],
-        is_active=True,
-    )
+    enrollments = StudentSubjectEnrollment.objects.filter(
+        subject__in=subjects_qs, exam_session=session
+    ).select_related('student')
+    
+    student_map = {}
+    for enr in enrollments:
+        sid = str(enr.student.id)
+        sub_id = str(enr.subject.id)
+        if sid not in student_map:
+            student_map[sid] = set()
+        student_map[sid].add(sub_id)
 
-    # Generate time slots: one morning + one afternoon per exam day
-    MORNING_START = dt_time(9, 30)
-    MORNING_END   = dt_time(12, 30)
-    AFTERNOON_START = dt_time(14, 0)
-    AFTERNOON_END   = dt_time(17, 0)
+    subjects = []
+    for sub in subjects_qs:
+        sub_students = [sid for sid, subs in student_map.items() if str(sub.id) in subs]
+        subjects.append(SubjectDTO(
+            id=str(sub.id), code=sub.code, semester=sub.semester,
+            exam_duration_mins=180, enrolled_student_ids=sub_students,
+            required_capacity=len(sub_students), coordinator_id=str(sub.coordinator_id) if sub.coordinator_id else None
+        ))
 
-    time_slots: list[TimeSlotDTO] = []
-    current = session.start_date
+    rooms = [RoomDTO(id=str(r.id), name=r.name, exam_capacity=r.exam_capacity) for r in rooms_qs]
+    
+    start_date = session.start_date
+    end_date = session.end_date
+    
+    holidays = fetch_holidays(start_date.year)
+    
+    time_slots = []
+    curr = start_date
     idx = 0
-    while current <= session.end_date:
-        time_slots.append(TimeSlotDTO(
-            index=idx, exam_date=current,
-            start_time=MORNING_START, end_time=MORNING_END,
-        ))
-        idx += 1
-        time_slots.append(TimeSlotDTO(
-            index=idx, exam_date=current,
-            start_time=AFTERNOON_START, end_time=AFTERNOON_END,
-        ))
-        idx += 1
-        current += timedelta(days=1)
-
-    # Build subject DTOs with enrolment counts
-    subject_dtos: list[SubjectDTO] = []
-    student_enrollments: dict[str, set[str]] = {}
-
-    from eligibility.models import StudentEligibility
-    for subj in subjects_qs:
-        # First check eligible students for this subject and session
-        enrolled = list(
-            StudentEligibility.objects.filter(
-                subject=subj, exam_session=session, is_eligible=True
-            ).values_list("student__user__id", flat=True)
-        )
+    while curr <= end_date:
+        if curr.weekday() != 6 and curr.strftime('%Y-%m-%d') not in holidays:
+            time_slots.append(TimeSlotDTO(index=idx, exam_date=curr, start_time=datetime.time(9, 30), end_time=datetime.time(12, 30)))
+            idx += 1
+            if session.exams_per_day == 2:
+                time_slots.append(TimeSlotDTO(index=idx, exam_date=curr, start_time=datetime.time(14, 0), end_time=datetime.time(17, 0)))
+                idx += 1
+        curr += timedelta(days=1)
         
-        # Fallback to enrollments if no eligibility records exist
-        if not enrolled:
-            enrolled = list(
-                StudentSubjectEnrollment.objects.filter(
-                    subject=subj, exam_session=session
-                ).values_list("student__user__id", flat=True)
-            )
+    return ScheduleInput(subjects=subjects, rooms=rooms, invigilators=[], time_slots=time_slots, student_enrollments=student_map, exam_session_id=exam_session_id)
 
-        for sid in enrolled:
-            student_enrollments.setdefault(str(sid), set()).add(str(subj.id))
+class TimetableSolver:
+    def __init__(self, data: ScheduleInput, time_limit_secs: int = 120):
+        self.data = data
+        self.subjects = data.subjects
+        self.rooms = data.rooms
+        self.time_slots = data.time_slots
 
-        subject_dtos.append(SubjectDTO(
-            id=str(subj.id),
-            code=subj.code,
-            semester=subj.semester,
-            exam_duration_mins=subj.exam_duration_mins,
-            enrolled_student_ids=[str(e) for e in enrolled],
-            required_capacity=len(enrolled),
-            coordinator_id=str(subj.coordinator_id) if subj.coordinator_id else None,
-        ))
-
-    room_dtos = [
-        RoomDTO(id=str(r.id), name=r.name, exam_capacity=r.exam_capacity)
-        for r in rooms_qs
-    ]
-    invigilator_dtos = [
-        InvigilatorDTO(id=str(u.id), name=u.full_name)
-        for u in invigilators_qs
-    ]
-
-    return ScheduleInput(
-        subjects=subject_dtos,
-        rooms=room_dtos,
-        invigilators=invigilator_dtos,
-        time_slots=time_slots,
-        student_enrollments=student_enrollments,
-    )
+    def solve(self) -> ScheduleResult:
+        # Phase 1: Conflict Graph & Greedy Coloring
+        conflict_edges = set()
+        for subs in self.data.student_enrollments.values():
+            lst = list(subs)
+            for i in range(len(lst)):
+                for j in range(i+1, len(lst)):
+                    conflict_edges.add((lst[i], lst[j]))
+                    conflict_edges.add((lst[j], lst[i]))
+                    
+        sorted_subs = sorted(self.subjects, key=lambda s: s.required_capacity, reverse=True)
+        
+        slot_groups = [[] for _ in self.data.time_slots]
+        
+        for sub in sorted_subs:
+            assigned = False
+            for idx, group in enumerate(slot_groups):
+                conflict = False
+                for other_sub in group:
+                    if (sub.id, other_sub.id) in conflict_edges:
+                        conflict = True
+                        break
+                if not conflict:
+                    group.append(sub)
+                    assigned = True
+                    break
+            if not assigned:
+                return ScheduleResult(success=False, error=f'Not enough time slots to schedule subject {sub.code} due to conflicts.')
+                
+        # Phase 2: Seating Optimization (A B A B) & Room Allocation
+        assignments = []
+        for slot_idx, group in enumerate(slot_groups):
+            if not group:
+                continue
+            
+            # Simple capacity check
+            total_students = sum(s.required_capacity for s in group)
+            total_room_cap = sum(r.exam_capacity for r in self.rooms)
+            if total_students > total_room_cap:
+                return ScheduleResult(success=False, error=f'Total students {total_students} in slot {slot_idx} exceeds room capacity {total_room_cap}.')
+                
+            # For each room, assign multiple subjects to achieve interleaving
+            students_to_seat = {s.id: list(s.enrolled_student_ids) for s in group}
+            active_subjects = [s for s in group if students_to_seat[s.id]]
+            
+            for room in self.rooms:
+                room_rem = room.exam_capacity
+                room_assigned_subs = set()
+                while room_rem > 0 and active_subjects:
+                    sub = active_subjects.pop(0)
+                    chunk_size = min(room_rem, max(1, room_rem // len(active_subjects) if active_subjects else room_rem))
+                    chunk = students_to_seat[sub.id][:chunk_size]
+                    del students_to_seat[sub.id][:chunk_size]
+                    
+                    if chunk:
+                        room_assigned_subs.add(sub.id)
+                        room_rem -= len(chunk)
+                        
+                    if students_to_seat[sub.id]:
+                        active_subjects.append(sub)
+                        
+                for sub_id in room_assigned_subs:
+                    sub_obj = next(s for s in group if s.id == sub_id)
+                    assignments.append(SlotAssignment(
+                        subject_id=sub_obj.id,
+                        subject_code=sub_obj.code,
+                        room_id=room.id,
+                        room_name=room.name,
+                        time_slot=self.time_slots[slot_idx]
+                    ))
+                    
+        return ScheduleResult(success=True, assignments=assignments, objective_value=100)

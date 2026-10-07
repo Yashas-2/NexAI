@@ -20,8 +20,8 @@ import {
 import { api } from '@/services/api';
 import { generateTimetableDates } from '../services/aiAllocationEngine';
 
-// Standard exam time slots (must match Step1ScopeSchedule.tsx)
-const STANDARD_TIME_SLOTS: TimeSlot[] = [
+// Standard exam time slots (fallback defaults)
+const DEFAULT_TIME_SLOTS: TimeSlot[] = [
   { id: 'SLOT_M1', name: 'Morning Forenoon Slot (M1)', startTime: '09:30 AM', endTime: '12:30 PM', sessionPeriod: 'FORENOON' },
   { id: 'SLOT_A1', name: 'Afternoon Post-Meridiem Slot (A1)', startTime: '02:00 PM', endTime: '05:00 PM', sessionPeriod: 'AFTERNOON' },
 ];
@@ -107,7 +107,8 @@ export const AllocationWizard: React.FC<AllocationWizardProps> = ({
               return true;
             }).length;
           } else {
-            eligibleCount = s.enrolled_students ?? 30;
+            // No eligibility records = marks not synced yet = cannot determine eligibility
+            eligibleCount = 0;
           }
 
           return {
@@ -140,7 +141,7 @@ export const AllocationWizard: React.FC<AllocationWizardProps> = ({
           designation: 'Assistant Professor' as const,
           email: f.email,
           phone: f.phone || '',
-          historicalDutyCount: 0,
+          historicalDutyCount: f.historical_duties_count || 0,
           currentCycleDuties: 0,
           maxDutyQuota: 4,
           isAvailable: f.is_active !== false,
@@ -170,7 +171,7 @@ export const AllocationWizard: React.FC<AllocationWizardProps> = ({
               endDate: sessionData.end_date || sessionData.start_date || new Date().toISOString().split('T')[0],
               // Convert slot IDs back to full TimeSlot objects
               selectedSlots: (sessionData.selected_slots || [])
-                .map((slotId: string) => STANDARD_TIME_SLOTS.find(s => s.id === slotId))
+                .map((slotId: string) => DEFAULT_TIME_SLOTS.find(s => s.id === slotId) || { id: slotId, name: slotId, startTime: '09:00 AM', endTime: '12:00 PM', sessionPeriod: 'FORENOON' as const })
                 .filter(Boolean) as TimeSlot[],
             };
 
@@ -278,6 +279,12 @@ export const AllocationWizard: React.FC<AllocationWizardProps> = ({
     // Persist the allocation results for the HOD portal to generate accurate Hall Tickets
     try {
       localStorage.setItem('nexai_timetable_slots', JSON.stringify(results));
+      // Also persist the full blueprint state tied to this session ID so it doesn't vanish
+      if (createdSessionId) {
+        localStorage.setItem('nexai_blueprint_' + createdSessionId, JSON.stringify({
+          results, telemetry, scope: scopeConfig
+        }));
+      }
     } catch (e) {
       console.error('Failed to save allocation results to local storage', e);
     }
@@ -324,7 +331,7 @@ export const AllocationWizard: React.FC<AllocationWizardProps> = ({
           onSubjectsChange={setSelectedSubjects}
           onNext={async () => {
             // Auto-generate timetable dates with 1-day gaps, skipping Sundays/Holidays
-            const startDateStr = scopeConfig.startDate || new Date().toISOString().split('T')[0];
+            const startDateStr = scopeConfig.firstExamDate || scopeConfig.startDate || new Date().toISOString().split('T')[0];
             const generatedDates = generateTimetableDates(startDateStr, selectedSubjects.length);
             
             const subjectsWithDates = selectedSubjects.map((subj, index) => ({

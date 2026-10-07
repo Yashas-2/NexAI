@@ -162,7 +162,7 @@ export const SeatingBlueprint: React.FC<SeatingBlueprintProps> = ({
       {activeTab === 'FLOOR_PLANS' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '28px' }}>
           {filteredRooms.map(room => (
-            <RoomFloorPlan key={room.roomId} roomResult={room} />
+            <RoomFloorPlan key={room.roomId} roomResult={room} scopeConfig={scopeConfig} />
           ))}
         </div>
       )}

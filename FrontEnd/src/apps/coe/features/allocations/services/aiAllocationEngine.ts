@@ -64,8 +64,10 @@ export function generateStudentCandidates(
     const roll = String(i).padStart(3, '0');
     // USN includes subject code to guarantee uniqueness across subjects
     const usn = `${subject.code}-${roll}`;
-    const fName = FIRST_NAMES[(i * 3) % FIRST_NAMES.length];
-    const lName = LAST_NAMES[(i * 2) % LAST_NAMES.length];
+    // Mix subject code length/characters into the index to ensure different names for the same roll number across branches
+    const subjectEntropy = subject.code.charCodeAt(0) + subject.code.charCodeAt(subject.code.length - 1);
+    const fName = FIRST_NAMES[((i * 3) + subjectEntropy) % FIRST_NAMES.length];
+    const lName = LAST_NAMES[((i * 2) + subjectEntropy) % LAST_NAMES.length];
     const isSpecialAccommodated = (i % 47 === 0);
 
     candidates.push({
@@ -112,16 +114,29 @@ export function runAISeatingSolver(
   let totalPwdAllocated = 0;
   let totalPwdCandidates = 0;
 
-  // 1. Calculate capacity
-  const totalRoomCapacity = rooms.reduce((sum, r) => sum + r.capacity, 0);
-  const effectiveCapacity = Math.floor(totalRoomCapacity * (1 - config.reserveBufferPercentage / 100));
-
-  // 2. Generate candidates for ALL subjects
-  const allCandidates: SeatedCandidate[] = [];
-  const targetPerSubject = Math.floor(effectiveCapacity / (subjects.length || 1));
-  subjects.forEach(subject => {
-    allCandidates.push(...generateStudentCandidates(subject, targetPerSubject));
+  // Group subjects by Date
+  const dateGroups: Record<string, SubjectExam[]> = {};
+  subjects.forEach(s => {
+    const d = s.examDate || '1970-01-01';
+    if (!dateGroups[d]) dateGroups[d] = [];
+    dateGroups[d].push(s);
   });
+
+  const dates = Object.keys(dateGroups);
+
+  dates.forEach(examDateStr => {
+    const daySubjects = dateGroups[examDateStr];
+
+    // 1. Calculate capacity
+    const totalRoomCapacity = rooms.reduce((sum, r) => sum + r.capacity, 0);
+    const effectiveCapacity = Math.floor(totalRoomCapacity * (1 - config.reserveBufferPercentage / 100));
+
+    // 2. Generate candidates for DAY's subjects
+    const allCandidates: SeatedCandidate[] = [];
+    const targetPerSubject = Math.floor(effectiveCapacity / (daySubjects.length || 1));
+    daySubjects.forEach(subject => {
+      allCandidates.push(...generateStudentCandidates(subject, targetPerSubject));
+    });
 
   totalPwdCandidates = allCandidates.filter(c => c.isSpecialAccommodated).length;
 
@@ -180,33 +195,48 @@ export function runAISeatingSolver(
         }
       }
 
-      // Fill remaining seats
-      while (seatedCandidates.length < maxAllocatableSeats) {
+      // Fill remaining seats using strict Anti-Cheating Checkerboard matrix
+      let currentSeatIndex = seatedCandidates.length > 0 ? seatedCandidates[seatedCandidates.length - 1].seatIndex + 1 : 0;
+      
+      while (currentSeatIndex < maxAllocatableSeats) {
         const candidate = getNextInterleavedCandidate();
         if (!candidate) break;
 
-        const seatIndex = seatedCandidates.length;
+        let foundValidSeat = false;
+        while (currentSeatIndex < maxAllocatableSeats) {
+            const leftNeighbor = currentSeatIndex % cols !== 0 ? seatedCandidates.find(c => c.seatIndex === currentSeatIndex - 1) : null;
+            const frontNeighbor = currentSeatIndex >= cols ? seatedCandidates.find(c => c.seatIndex === currentSeatIndex - cols) : null;
+
+            let conflict = false;
+            if (leftNeighbor && leftNeighbor.department === candidate.department) conflict = true;
+            if (frontNeighbor && frontNeighbor.department === candidate.department) conflict = true;
+
+            if (!conflict) {
+                foundValidSeat = true;
+                break;
+            }
+            currentSeatIndex++;
+        }
+
+        if (!foundValidSeat) {
+            // We reached the end of the room but couldn't place the candidate without a conflict.
+            // Refund the candidate to the queue so they can be placed in the next room
+            deptQueues[candidate.department].unshift(candidate);
+            if (!activeDeptCodes.includes(candidate.department)) activeDeptCodes.push(candidate.department);
+            break;
+        }
+
+        const seatIndex = currentSeatIndex;
         candidate.seatIndex = seatIndex;
         candidate.benchNumber = Math.floor(seatIndex / 2) + 1;
         candidate.deskPosition = seatIndex % 2 === 0 ? 'L' : 'R';
 
-        if (seatIndex > 0 && seatIndex % cols !== 0) {
-          const leftNeighbor = seatedCandidates[seatIndex - 1];
-          totalAdjacentPairs++;
-          if (leftNeighbor.department === candidate.department) {
-            totalConflictPairs++;
-          }
-        }
-        if (seatIndex >= cols) {
-          const frontNeighbor = seatedCandidates[seatIndex - cols];
-          totalAdjacentPairs++;
-          if (frontNeighbor && frontNeighbor.department === candidate.department) {
-            totalConflictPairs++;
-          }
-        }
+        if (seatIndex > 0 && seatIndex % cols !== 0) totalAdjacentPairs++;
+        if (seatIndex >= cols) totalAdjacentPairs++;
 
         seatedCandidates.push(candidate);
         deptTallies[candidate.department] = (deptTallies[candidate.department] || 0) + 1;
+        currentSeatIndex++;
       }
 
       // Invigilator assignment
@@ -243,23 +273,27 @@ export function runAISeatingSolver(
         if (reliever) reliever.currentCycleDuties += 1;
       }
 
-      const result: RoomAllocationResult = {
-        roomId: room.id,
-        roomNumber: room.roomNumber,
-        building: room.building,
-        floor: room.floor,
-        capacity: room.capacity,
-        cols,
-        seatedCandidates,
-        occupiedCount: seatedCandidates.length,
-        emptyCount: room.capacity - seatedCandidates.length,
-        chiefInvigilator: chief || facultyTracker[0],
-        relieverInvigilator: reliever,
-        departmentTallies: deptTallies,
-      };
+      if (seatedCandidates.length > 0) {
+        const result: RoomAllocationResult = {
+          roomId: room.id,
+          examDate: examDateStr,
+          roomNumber: room.roomNumber,
+          building: room.building,
+          floor: room.floor,
+          capacity: room.capacity,
+          cols,
+          seatedCandidates,
+          occupiedCount: seatedCandidates.length,
+          emptyCount: room.capacity - seatedCandidates.length,
+          chiefInvigilator: chief || facultyTracker[0],
+          relieverInvigilator: reliever,
+          departmentTallies: deptTallies,
+        };
 
-      allResults.push(result);
+        allResults.push(result);
+      }
     });
+  }); // close dates.forEach
 
   const endTime = performance.now();
 

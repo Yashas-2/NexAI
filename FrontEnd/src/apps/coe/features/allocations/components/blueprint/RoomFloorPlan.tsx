@@ -3,12 +3,14 @@ import { DoorOpen, MapPin, UserCheck, ShieldCheck, Accessibility, BookOpen } fro
 import { RoomAllocationResult } from '../../types/allocationTypes';
 import { BenchSeat } from './BenchSeat';
 import { MOCK_DEPARTMENTS } from '../../mock/allocationMockData';
+import { SessionScopeConfig } from '../../types/allocationTypes';
 
 interface RoomFloorPlanProps {
   roomResult: RoomAllocationResult;
+  scopeConfig?: SessionScopeConfig;
 }
 
-export const RoomFloorPlan: React.FC<RoomFloorPlanProps> = ({ roomResult }) => {
+export const RoomFloorPlan: React.FC<RoomFloorPlanProps> = ({ roomResult, scopeConfig }) => {
   const {
     roomNumber,
     building,
@@ -33,7 +35,7 @@ export const RoomFloorPlan: React.FC<RoomFloorPlanProps> = ({ roomResult }) => {
     subjectTallies[c.subjectCode].count++;
   });
 
-  const seatSlots = Array.from({ length: capacity }, (_, i) => seatedCandidates[i] || null);
+  const seatSlots = Array.from({ length: capacity }, (_, i) => seatedCandidates.find(c => c.seatIndex === i) || null);
   const aisleColIndex = Math.floor(cols / 2) - 1;
 
   return (
@@ -71,6 +73,22 @@ export const RoomFloorPlan: React.FC<RoomFloorPlanProps> = ({ roomResult }) => {
                   gap: '4px',
                 }}>
                   <Accessibility size={12} /> Ground Floor
+                </span>
+              )}
+              {roomResult.examDate && (
+                <span style={{
+                  background: 'rgba(56, 189, 248, 0.2)',
+                  color: '#38BDF8',
+                  border: '1px solid rgba(56, 189, 248, 0.4)',
+                  padding: '2px 8px',
+                  borderRadius: '6px',
+                  fontSize: '0.72rem',
+                  fontWeight: 700,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                }}>
+                  📅 {new Date(roomResult.examDate).toLocaleDateString()}
                 </span>
               )}
             </div>

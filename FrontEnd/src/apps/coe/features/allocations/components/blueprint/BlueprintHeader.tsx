@@ -205,6 +205,11 @@ export const BlueprintHeader: React.FC<BlueprintHeaderProps> = ({
               <p style={{ margin: '4px 0 0 0', fontSize: '0.85rem', opacity: 0.9 }}>
                 {totalStudents} candidates allocated across {roomResults.length} halls • Equal duty balanced for all invigilators
               </p>
+              {_scopeConfig && (_scopeConfig.firstExamDate || _scopeConfig.startDate) && _scopeConfig.selectedSlots?.[0] && (
+                <div style={{ marginTop: '6px', fontSize: '0.85rem', fontWeight: 600, background: 'rgba(255,255,255,0.2)', display: 'inline-block', padding: '4px 10px', borderRadius: '4px' }}>
+                  📅 Multi-Day Exam Cycle: {new Date(_scopeConfig.firstExamDate || _scopeConfig.startDate).toLocaleDateString()} to {new Date(_scopeConfig.endDate).toLocaleDateString()} • 🕒 {_scopeConfig.selectedSlots[0].startTime} to {_scopeConfig.selectedSlots[0].endTime}
+                </div>
+              )}
             </div>
           </div>
 

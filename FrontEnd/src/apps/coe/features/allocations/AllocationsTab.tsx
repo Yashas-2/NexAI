@@ -130,6 +130,16 @@ export const AllocationsTab: React.FC = () => {
             }}
             onView={id => {
               setActiveSessionId(id);
+              // Try to load cached blueprint
+              try {
+                const cached = localStorage.getItem('nexai_blueprint_' + id);
+                if (cached) {
+                  const parsed = JSON.parse(cached);
+                  setBlueprintResults(parsed.results || []);
+                  setBlueprintTelemetry(parsed.telemetry || null);
+                  setBlueprintScope(parsed.scope || null);
+                }
+              } catch(e) {}
               setViewState('BLUEPRINT');
             }}
             onRefresh={() => setListRefreshKey(k => k + 1)}

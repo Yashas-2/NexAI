@@ -1,9 +1,32 @@
-import React from 'react';
-import { Calendar, Clock, ArrowRight, CheckSquare, Square } from 'lucide-react';
+import React, { useState } from 'react';
+import { Calendar, Clock, ArrowRight, CheckSquare, Square, Plus, Trash2 } from 'lucide-react';
 import { SessionScopeConfig, SemesterNumber, TimeSlot } from '../../../types/allocationTypes';
 
-// Standard exam time slots (institutional configuration — not a DB entity)
-const STANDARD_TIME_SLOTS: TimeSlot[] = [
+const formatTimeTo24 = (timeStr: string): string => {
+  if (!timeStr) return "09:00";
+  const trimmed = timeStr.trim();
+  const match = trimmed.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!match) return trimmed;
+  let h = parseInt(match[1], 10);
+  const m = match[2];
+  const period = match[3].toUpperCase();
+  if (period === "PM" && h < 12) h += 12;
+  if (period === "AM" && h === 12) h = 0;
+  return `${String(h).padStart(2, "0")}:${m}`;
+};
+
+const formatTimeTo12 = (time24: string): string => {
+  if (!time24) return "09:00 AM";
+  const[ hStr, mStr ] = time24.split(":");
+  if (!hStr || !mStr) return time24;
+  let h = parseInt(hStr, 10);
+  if (isNaN(h)) return time24;
+  const period = h >= 12 ? "PM" : "AM";
+  const h12 = h > 12 ? h - 12 : h === 0 ? 12 : h;
+  return `${String(h12).padStart(2, "0")}:${mStr} ${period}`;
+};
+
+const DEFAULT_TIME_SLOTS: TimeSlot[] = [
   { id: 'SLOT_M1', name: 'Morning Forenoon Slot (M1)', startTime: '09:30 AM', endTime: '12:30 PM', sessionPeriod: 'FORENOON' },
   { id: 'SLOT_A1', name: 'Afternoon Post-Meridiem Slot (A1)', startTime: '02:00 PM', endTime: '05:00 PM', sessionPeriod: 'AFTERNOON' },
 ];
@@ -25,6 +48,9 @@ export const Step1ScopeSchedule: React.FC<Step1ScopeScheduleProps> = ({
 }) => {
   const allDepts = departments;
   const allSemesters: SemesterNumber[] = [1, 2, 3, 4, 5, 6, 7, 8];
+  const [timeSlots, setTimeSlots] = useState<TimeSlot[]>(() => {
+    return config.selectedSlots.length > 0 ? [...config.selectedSlots] : DEFAULT_TIME_SLOTS;
+  });
 
   const toggleDept = (deptCode: string) => {
     const isSelected = config.selectedDepartments.includes(deptCode);
@@ -59,15 +85,39 @@ export const Step1ScopeSchedule: React.FC<Step1ScopeScheduleProps> = ({
   const toggleSlot = (slot: TimeSlot) => {
     const exists = config.selectedSlots.some(s => s.id === slot.id);
     if (exists) {
-      // Deselect
       onChange({ selectedSlots: config.selectedSlots.filter(s => s.id !== slot.id) });
     } else if (config.examsPerDay === 1) {
-      // Single-session mode: replace any existing slot with the new one
       onChange({ selectedSlots: [slot] });
     } else {
-      // Two-session mode: allow both
       onChange({ selectedSlots: [...config.selectedSlots, slot] });
     }
+  };
+
+  const updateSlot = (id: string, field: keyof TimeSlot, value: string) => {
+    setTimeSlots(prev => {
+      const updated = prev.map(s => s.id === id ? { ...s, [field]: value } : s);
+      // Also update selected slots if this slot is selected
+      const selectedUpdated = config.selectedSlots.map(s => s.id === id ? { ...s, [field]: value } : s);
+      onChange({ selectedSlots: selectedUpdated });
+      return updated;
+    });
+  };
+
+  const addSlot = () => {
+    const newId = `SLOT_${Date.now()}`;
+    const newSlot: TimeSlot = {
+      id: newId,
+      name: `Custom Slot (${timeSlots.length + 1})`,
+      startTime: '10:00 AM',
+      endTime: '01:00 PM',
+      sessionPeriod: 'FORENOON',
+    };
+    setTimeSlots(prev => [...prev, newSlot]);
+  };
+
+  const removeSlot = (id: string) => {
+    setTimeSlots(prev => prev.filter(s => s.id !== id));
+    onChange({ selectedSlots: config.selectedSlots.filter(s => s.id !== id) });
   };
 
   // When examsPerDay changes, enforce slot limits
@@ -211,7 +261,7 @@ export const Step1ScopeSchedule: React.FC<Step1ScopeScheduleProps> = ({
 
         <div>
           <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 700, marginBottom: '6px', color: '#1E293B' }}>
-            Exam Start Date
+            Exam Cycle Start Date
           </label>
           <input
             type="date"
@@ -230,13 +280,34 @@ export const Step1ScopeSchedule: React.FC<Step1ScopeScheduleProps> = ({
 
         <div>
           <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 700, marginBottom: '6px', color: '#1E293B' }}>
-            Exam End Date
+            Exam Cycle End Date
           </label>
           <input
             type="date"
             value={config.endDate}
             min={config.startDate}
             onChange={e => onChange({ endDate: e.target.value })}
+            style={{
+              width: '100%',
+              padding: '10px 14px',
+              borderRadius: '8px',
+              border: '1.5px solid #CBD5E1',
+              fontSize: '0.875rem',
+              boxSizing: 'border-box',
+            }}
+          />
+        </div>
+
+        <div>
+          <label style={{ display: 'block', fontSize: '0.82rem', fontWeight: 700, marginBottom: '6px', color: '#1E293B' }}>
+            First Exam Date
+          </label>
+          <input
+            type="date"
+            value={config.firstExamDate || ''}
+            min={config.startDate}
+            max={config.endDate}
+            onChange={e => onChange({ firstExamDate: e.target.value })}
             style={{
               width: '100%',
               padding: '10px 14px',
@@ -462,48 +533,116 @@ export const Step1ScopeSchedule: React.FC<Step1ScopeScheduleProps> = ({
 
             {/* Slots selection */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#475569' }}>
-                Active Time Windows:
-              </span>
-              {STANDARD_TIME_SLOTS.map(slot => {
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#475569' }}>
+                  Active Time Windows:
+                </span>
+                {config.examsPerDay === 2 && (
+                  <button
+                    onClick={addSlot}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: '4px',
+                      padding: '4px 10px', borderRadius: '6px', border: '1px solid #10B981',
+                      background: '#ECFDF5', color: '#065F46', fontWeight: 700, fontSize: '0.72rem',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <Plus size={12} /> Add Slot
+                  </button>
+                )}
+              </div>
+              {timeSlots.map(slot => {
                 const isSelected = config.selectedSlots.some(s => s.id === slot.id);
                 const isDisabled = !isSelected && config.examsPerDay === 1 && config.selectedSlots.length >= 1;
                 return (
                   <div
                     key={slot.id}
-                    onClick={() => toggleSlot(slot)}
                     style={{
                       padding: '10px 14px',
                       borderRadius: '8px',
                       border: isSelected ? '2px solid #10B981' : (isDisabled ? '1.5px dashed #CBD5E1' : '1.5px solid #E2E8F0'),
                       background: isSelected ? '#ECFDF5' : (isDisabled ? '#F1F5F9' : '#FAFAFA'),
-                      cursor: isDisabled ? 'not-allowed' : 'pointer',
                       opacity: isDisabled ? 0.5 : 1,
                       display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      transition: 'all 0.15s ease',
+                      flexDirection: 'column',
+                      gap: '6px',
                     }}
                   >
-                    <div>
-                      <div style={{ fontWeight: 700, fontSize: '0.82rem', color: isSelected ? '#065F46' : '#1E293B' }}>
-                        {slot.name}
-                        {isDisabled && <span style={{ fontSize: '0.7rem', color: '#94A3B8', marginLeft: '8px', fontWeight: 400 }}>(1 session/day limit)</span>}
-                      </div>
-                      <div style={{ fontSize: '0.75rem', color: '#64748B' }}>
-                        {slot.startTime} – {slot.endTime} (3.0 Hours)
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <input
+                        value={slot.name}
+                        onChange={e => updateSlot(slot.id, 'name', e.target.value)}
+                        onClick={e => e.stopPropagation()}
+                        style={{
+                          border: 'none', background: 'transparent', fontWeight: 700, fontSize: '0.82rem',
+                          color: isSelected ? '#065F46' : '#1E293B', padding: 0, width: '100%',
+                        }}
+                      />
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <select
+                          value={slot.sessionPeriod}
+                          onChange={e => updateSlot(slot.id, 'sessionPeriod', e.target.value)}
+                          onClick={e => e.stopPropagation()}
+                          style={{
+                            padding: '2px 6px', borderRadius: '4px', border: '1px solid #CBD5E1',
+                            fontSize: '0.7rem', fontWeight: 700, background: 'white', cursor: 'pointer',
+                          }}
+                        >
+                          <option value="FORENOON">FORENOON</option>
+                          <option value="AFTERNOON">AFTERNOON</option>
+                        </select>
+                        <button
+                          onClick={e => { e.stopPropagation(); removeSlot(slot.id); }}
+                          style={{
+                            background: 'none', border: 'none', cursor: 'pointer', padding: '2px',
+                            color: '#EF4444', display: 'flex',
+                          }}
+                        >
+                          <Trash2 size={14} />
+                        </button>
                       </div>
                     </div>
-                    <span style={{
-                      fontSize: '0.72rem',
-                      fontWeight: 800,
-                      background: isSelected ? '#10B981' : '#CBD5E1',
-                      color: 'white',
-                      padding: '3px 8px',
-                      borderRadius: '12px',
-                    }}>
-                      {slot.sessionPeriod}
-                    </span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <input
+                        type="time"
+                        value={formatTimeTo24(slot.startTime)}
+                        onChange={e => {
+                          if (e.target.value) {
+                            updateSlot(slot.id, 'startTime', formatTimeTo12(e.target.value));
+                          }
+                        }}
+                        onClick={e => e.stopPropagation()}
+                        style={{
+                          padding: '3px 6px', borderRadius: '4px', border: '1px solid #CBD5E1',
+                          fontSize: '0.75rem', fontWeight: 600, background: 'white',
+                        }}
+                      />
+                      <span style={{ fontSize: '0.75rem', color: '#64748B' }}>to</span>
+                      <input
+                        type="time"
+                        value={formatTimeTo24(slot.endTime)}
+                        onChange={e => {
+                          if (e.target.value) {
+                            updateSlot(slot.id, 'endTime', formatTimeTo12(e.target.value));
+                          }
+                        }}
+                        onClick={e => e.stopPropagation()}
+                        style={{
+                          padding: '3px 6px', borderRadius: '4px', border: '1px solid #CBD5E1',
+                          fontSize: '0.75rem', fontWeight: 600, background: 'white',
+                        }}
+                      />
+                      <span
+                        onClick={() => toggleSlot(slot)}
+                        style={{
+                          fontSize: '0.72rem', fontWeight: 800, marginLeft: 'auto',
+                          background: isSelected ? '#10B981' : '#CBD5E1',
+                          color: 'white', padding: '3px 8px', borderRadius: '12px', cursor: 'pointer',
+                        }}
+                      >
+                        {isSelected ? 'SELECTED' : 'SELECT'}
+                      </span>
+                    </div>
                   </div>
                 );
               })}

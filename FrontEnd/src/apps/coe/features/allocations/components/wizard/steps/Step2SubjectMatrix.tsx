@@ -304,6 +304,7 @@ export const Step2SubjectMatrix: React.FC<Step2SubjectMatrixProps> = ({
                 </div>
                 <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#475569' }}>SEE Written</span>
               </div>
+
             </div>
           );
         })}

@@ -220,7 +220,9 @@ export const Step5AIEngineConsole: React.FC<Step5AIEngineConsoleProps> = ({
             <option value="MAX_ENTROPY">Max-Entropy Department Shuffling</option>
           </select>
           <span style={{ fontSize: '0.72rem', color: '#64748B', display: 'block', marginTop: '4px' }}>
-            Prevents identical subject papers on adjacent seats (front, back, left, right).
+            {config.interleavingStrategy === 'CHECKERBOARD_2D' && 'Prevents identical subject papers on adjacent seats (front, back, left, right).'}
+            {config.interleavingStrategy === 'ROUND_ROBIN' && 'Rotates subjects in a linear sequence across rows. Simpler but may result in diagonal neighbors.'}
+            {config.interleavingStrategy === 'MAX_ENTROPY' && 'Randomizes seat allocations fully to eliminate any predictable patterns for potential cheaters.'}
           </span>
         </div>
 
@@ -245,7 +247,9 @@ export const Step5AIEngineConsole: React.FC<Step5AIEngineConsoleProps> = ({
             <option value={0}>0% Buffer (100% Maximum Density)</option>
           </select>
           <span style={{ fontSize: '0.72rem', color: '#64748B', display: 'block', marginTop: '4px' }}>
-            Keeps buffer seats vacant in each hall for scribes or late-admitted candidates.
+            {config.reserveBufferPercentage === 5 && 'Keeps 5% of seats vacant in each hall for scribes, emergencies, or late-admitted candidates.'}
+            {config.reserveBufferPercentage === 10 && 'Keeps 10% of seats vacant for high contingency scenarios.'}
+            {config.reserveBufferPercentage === 0 && 'Maximizes seating density by completely filling every physical desk (not recommended).'}
           </span>
         </div>
 
@@ -269,7 +273,7 @@ export const Step5AIEngineConsole: React.FC<Step5AIEngineConsoleProps> = ({
             <option value="STANDARD">Standard Department Allocation</option>
           </select>
           <span style={{ fontSize: '0.72rem', color: '#64748B', display: 'block', marginTop: '4px' }}>
-            Equalizes cumulative duties across all participating teaching faculty.
+            {config.enforceEqualWorkload ? 'Mathematically minimizes standard deviation across total invigilation hours to ensure perfect fairness.' : 'Assigns invigilators based solely on department availability without strict cross-campus hour balancing.'}
           </span>
         </div>
       </div>

@@ -30,7 +30,7 @@ export const Step4InvigilatorRoster: React.FC<Step4InvigilatorRosterProps> = ({
       onRosterChange(availableFaculty.map(f => ({
         ...f,
         isAvailable: true,
-        historicalDutyCount: Math.floor(Math.random() * 5), // Mocking historical data for now
+        historicalDutyCount: f.historicalDutyCount || 0, // Mocking historical data for now
         currentCycleDuties: 0,
         tags: []
       })));

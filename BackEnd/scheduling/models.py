@@ -102,6 +102,13 @@ class Room(models.Model):
     exam_capacity = models.PositiveSmallIntegerField(
         help_text="Max students allowed during an exam (usually 60–70% of total)"
     )
+    rows_count = models.PositiveSmallIntegerField(default=0, help_text="Number of seat rows in the room")
+    cols_count = models.PositiveSmallIntegerField(default=0, help_text="Number of seat columns in the room")
+    bench_style = models.CharField(
+        max_length=20,
+        default='SINGLE_SEATER',
+        choices=[('SINGLE_SEATER', 'Single Seater'), ('DOUBLE_SEATER', 'Double Seater')],
+    )
     has_cctv = models.BooleanField(default=True)
     has_wifi = models.BooleanField(default=False)
     is_lab = models.BooleanField(default=False)
@@ -160,7 +167,11 @@ class ExamSession(models.Model):
     )
     selected_slots = models.JSONField(
         default=list, blank=True,
-        help_text="Selected time slots, e.g. ['SLOT_M1'] or ['SLOT_M1','SLOT_A1']"
+        help_text="Selected time slots, e.g. ['09:30 AM - 11:00 AM']"
+    )
+    selected_rooms = models.JSONField(
+        default=list, blank=True,
+        help_text="Selected room names, e.g. ['CRB-1', 'CRB-2']"
     )
     status = models.CharField(
         max_length=15,
@@ -279,7 +290,7 @@ class InvigilationDuty(models.Model):
         "users.User",
         on_delete=models.PROTECT,
         related_name="invigilation_duties",
-        limit_choices_to={"role__in": ["INVIGILATOR", "HOD", "EVALUATOR"]},
+        limit_choices_to={"role__in": ["INVIGILATOR", "FACULTY", "EVALUATOR"]},
     )
     duty_role = models.CharField(
         max_length=10,
@@ -364,3 +375,84 @@ class StudentSubjectEnrollment(models.Model):
             f"{self.student.usn} → {self.subject.code} "
             f"[{self.exam_session.name}]"
         )
+
+
+class StudentExamAttendance(models.Model):
+    """
+    Tracks the attendance, scanning, and booklet state for a single student in a specific exam slot.
+    """
+    class AttendanceStatus(models.TextChoices):
+        PRESENT = "present", "Present"
+        ABSENT = "absent", "Absent"
+        MALPRACTICE = "malpractice", "Malpractice"
+        UNVERIFIED = "unverified", "Unverified"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    timetable_slot = models.ForeignKey(
+        TimetableSlot,
+        on_delete=models.CASCADE,
+        related_name="attendances"
+    )
+    student = models.ForeignKey(
+        "users.Student",
+        on_delete=models.CASCADE,
+        related_name="exam_attendances"
+    )
+    desk_id = models.CharField(max_length=20, help_text="e.g. Desk B-01")
+    seat_position = models.CharField(max_length=20, help_text="e.g. Row 1, Col 1")
+    
+    status = models.CharField(
+        max_length=20, 
+        choices=AttendanceStatus.choices, 
+        default=AttendanceStatus.UNVERIFIED
+    )
+    is_qr_verified = models.BooleanField(default=False)
+    is_biometric_matched = models.BooleanField(default=False)
+    
+    booklet_barcode = models.CharField(max_length=100, null=True, blank=True)
+    dummy_barcode = models.CharField(max_length=100, null=True, blank=True)
+    digitized_pages_count = models.IntegerField(default=0)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = "scheduling_student_exam_attendance"
+        unique_together = [("timetable_slot", "student")]
+
+    def __str__(self):
+        return f"{self.student.usn} - {self.timetable_slot} ({self.status})"
+
+
+class ExamIncidentReport(models.Model):
+    """
+    Incident report created by Invigilator for malpractice or other issues.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    timetable_slot = models.ForeignKey(
+        TimetableSlot,
+        on_delete=models.CASCADE,
+        related_name="incidents"
+    )
+    student = models.ForeignKey(
+        "users.Student",
+        on_delete=models.CASCADE,
+        related_name="exam_incidents"
+    )
+    reported_by = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="reported_incidents"
+    )
+    infraction_type = models.CharField(max_length=100)
+    description = models.TextField()
+    is_broadcasted_to_coe = models.BooleanField(default=True)
+    timestamp = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = "scheduling_exam_incident_report"
+        
+    def __str__(self):
+        return f"{self.infraction_type} - {self.student.usn}"
+
