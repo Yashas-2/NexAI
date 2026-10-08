@@ -9,76 +9,48 @@ import {
   UserCheck
 } from 'lucide-react';
 
-import {
-  ScrutinyBundle,
-  EvaluatorProfile
-} from './types';
-import {
-  INITIAL_SCRUTINY_BUNDLES,
-  INITIAL_EVALUATORS
-} from './mockData';
-
-import { ScrutinyOverviewTab } from './features/overview/ScrutinyOverviewTab';
+import { MainEvaluatorOverviewTab } from './features/overview/MainEvaluatorOverviewTab';
 import { BundleManagementTab } from './features/bundles/BundleManagementTab';
-import { MarksScrutinyAuditTab } from './features/audit/MarksScrutinyAuditTab';
+import { MarksTotalingVerificationTab } from './features/verification/MarksTotalingVerificationTab';
 import { CoEDispatchTab } from './features/dispatch/CoEDispatchTab';
 
-type ScrutinizerTab = 'OVERVIEW' | 'BUNDLES' | 'AUDIT' | 'DISPATCH';
+type ScrutinizerTab = 'OVERVIEW' | 'BUNDLES' | 'VERIFY' | 'LEDGER';
 
 export default function ScrutinizerDashboard() {
   const user = useAuthStore(s => s.user);
   const logout = useAuthStore(s => s.logout);
 
-  // States
   const [activeTab, setActiveTab] = useState<ScrutinizerTab>('OVERVIEW');
-  const [bundles, setBundles] = useState<ScrutinyBundle[]>(INITIAL_SCRUTINY_BUNDLES);
-  const [evaluators] = useState<EvaluatorProfile[]>(INITIAL_EVALUATORS);
-  const [selectedAuditBundleId, setSelectedAuditBundleId] = useState<string>(
-    INITIAL_SCRUTINY_BUNDLES[0]?.id || ''
-  );
-
-  const handleUpdateBundle = (updatedBundle: ScrutinyBundle) => {
-    setBundles(prev => prev.map(b => (b.id === updatedBundle.id ? updatedBundle : b)));
-  };
-
-  const handleAddBundle = (newBundle: ScrutinyBundle) => {
-    setBundles(prev => [newBundle, ...prev]);
-  };
-
-  const handleNavigateToAuditWithBundle = (bundle: ScrutinyBundle) => {
-    setSelectedAuditBundleId(bundle.id);
-    setActiveTab('AUDIT');
-  };
 
   const sidebarItems = [
-    { id: 'OVERVIEW', label: 'Scrutiny Overview', icon: <Layers size={20} /> },
-    { id: 'BUNDLES', label: 'Bundle Allocations', icon: <UserCheck size={20} /> },
-    { id: 'AUDIT', label: 'Marks Totaling Audit', icon: <AlertTriangle size={20} /> },
-    { id: 'DISPATCH', label: 'CoE Ledger Dispatch', icon: <ShieldCheck size={20} /> },
+    { id: 'OVERVIEW', label: 'Main Evaluator & Bundle Custodian', icon: <Layers size={20} /> },
+    { id: 'BUNDLES', label: 'Bundle Creation & Allocation', icon: <UserCheck size={20} /> },
+    { id: 'VERIFY', label: 'Marks Totaling & Verification', icon: <AlertTriangle size={20} /> },
+    { id: 'LEDGER', label: 'CoE Grade Ledger & Dispatch', icon: <ShieldCheck size={20} /> },
   ];
 
   const headerConfig: Record<ScrutinizerTab, { title: string; subtitle: string; icon: React.ReactNode; accentColor: string }> = {
     OVERVIEW: {
-      title: 'Central Scrutiny & Bundle Custodian Operations',
-      subtitle: 'Supervise examination answer script custody, evaluator allocations, and marks totaling integrity.',
+      title: 'Main Evaluator & Bundle Custodian',
+      subtitle: 'Receive completed SEE answer booklets, create bundles, allocate evaluators, and track the valuation pipeline.',
       icon: <Layers size={26} />,
       accentColor: '#3b82f6',
     },
     BUNDLES: {
-      title: 'Answer Booklet Bundle Allocation Desk',
-      subtitle: 'Ingest examination center packets, attach anonymized barcodes, and assign bundles to qualified evaluators.',
+      title: 'Main Evaluator Operations — Bundles & Allocation',
+      subtitle: 'File answer booklets into numbered bundles, generate bundle numbers, assign evaluators, and track bundle status.',
       icon: <UserCheck size={26} />,
       accentColor: '#48977f',
     },
-    AUDIT: {
-      title: 'Marks Totaling & Omission Scrutiny Desk',
-      subtitle: 'Verify question-by-question arithmetic sums, cover page grand totals, and un-evaluated answer pages.',
+    VERIFY: {
+      title: 'Marks Totaling & Verification',
+      subtitle: 'Verify question-wise marks, totals, missing marks, unanswered questions, and evaluator submission status.',
       icon: <AlertTriangle size={26} />,
       accentColor: '#f59e0b',
     },
-    DISPATCH: {
-      title: 'Certified CoE Grade Ledger Transmission',
-      subtitle: 'Transmit cryptographically certified marks ledgers directly to the Controller of Examinations.',
+    LEDGER: {
+      title: 'CoE Grade Ledger & Dispatch',
+      subtitle: 'Certify verified results, publish them into the CoE grade ledger, and dispatch / finalize for students.',
       icon: <ShieldCheck size={26} />,
       accentColor: '#10b981',
     },
@@ -88,8 +60,8 @@ export default function ScrutinizerDashboard() {
 
   return (
     <MainLayout
-      userName={user?.full_name || 'Dr. Claude Shannon'}
-      userRole="Central Scrutiny Custodian"
+      userName={user?.full_name || 'Main Evaluator'}
+      userRole="Main Evaluator"
       sidebarItems={sidebarItems}
       activeSidebarItemId={activeTab}
       onSidebarItemClick={id => setActiveTab(id as ScrutinizerTab)}
@@ -110,7 +82,6 @@ export default function ScrutinizerDashboard() {
             zIndex: 0,
           }}
         >
-          {/* Bundle & Magnifying Audit Vector */}
           <rect x="60" y="80" width="220" height="180" rx="16" fill="#48977f" />
           <line x1="60" y1="140" x2="280" y2="140" stroke="white" strokeWidth="4" />
           <circle cx="210" cy="190" r="50" fill="none" stroke="white" strokeWidth="8" />
@@ -126,42 +97,20 @@ export default function ScrutinizerDashboard() {
             accentColor={currentHeader.accentColor}
           />
 
-          {/* ── Tab Views ── */}
+          {/* ── Tab Views (self-fetching, real backend data) ── */}
           {activeTab === 'OVERVIEW' && (
-            <ScrutinyOverviewTab
-              bundles={bundles}
-              evaluators={evaluators}
+            <MainEvaluatorOverviewTab
               onNavigateToBundles={() => setActiveTab('BUNDLES')}
-              onNavigateToAudit={() => setActiveTab('AUDIT')}
-              onNavigateToDispatch={() => setActiveTab('DISPATCH')}
+              onNavigateToVerification={() => setActiveTab('VERIFY')}
+              onNavigateToLedger={() => setActiveTab('LEDGER')}
             />
           )}
 
-          {activeTab === 'BUNDLES' && (
-            <BundleManagementTab
-              bundles={bundles}
-              evaluators={evaluators}
-              onUpdateBundle={handleUpdateBundle}
-              onAddBundle={handleAddBundle}
-              onNavigateToAudit={handleNavigateToAuditWithBundle}
-            />
-          )}
+          {activeTab === 'BUNDLES' && <BundleManagementTab />}
 
-          {activeTab === 'AUDIT' && (
-            <MarksScrutinyAuditTab
-              bundles={bundles}
-              selectedBundleId={selectedAuditBundleId}
-              onSelectBundle={setSelectedAuditBundleId}
-              onUpdateBundle={handleUpdateBundle}
-              onCertifyBundleSuccess={() => setActiveTab('DISPATCH')}
-            />
-          )}
+          {activeTab === 'VERIFY' && <MarksTotalingVerificationTab />}
 
-          {activeTab === 'DISPATCH' && (
-            <CoEDispatchTab
-              bundles={bundles}
-            />
-          )}
+          {activeTab === 'LEDGER' && <CoEDispatchTab />}
         </div>
       </div>
     </MainLayout>

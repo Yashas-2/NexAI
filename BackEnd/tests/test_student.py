@@ -58,7 +58,17 @@ def setup_data():
         answer_script=script,
         student=student
     )
-    
+
+    from eligibility.models import StudentEligibility
+    StudentEligibility.objects.create(
+        student=student,
+        subject=subject,
+        exam_session=session,
+        attendance_percentage=90.00,
+        cie_marks=35.00,
+        is_eligible=True,
+    )
+
     return {
         "student_user": student_user,
         "student": student,
@@ -86,13 +96,24 @@ class TestStudentPortalAPI:
         assert len(response.data) == 1
         
         result_data = response.data[0]
-        # Evaluator score was 45. Mock CIE was 40. Total = 85. Grade = A.
-        assert result_data["cie_marks"] == "40.00"
+        # Real CIE (35, backfilled from eligibility) + evaluator SEE 45 = 80. Grade = A.
+        assert result_data["cie_marks"] == "35.00"
         assert result_data["see_marks"] == "45.00"
-        assert result_data["total_marks"] == "85.00"
+        assert result_data["total_marks"] == "80.00"
         assert result_data["grade"] == "A"
         assert result_data["subject_code"] == "CS501"
 
         # Check DB
         result_obj = Result.objects.first()
         assert result_obj.grade == "A"
+
+    def test_my_profile_includes_gpa(self, api_client, setup_data):
+        api_client.force_authenticate(user=setup_data["student_user"])
+        # Materialize results (SEE sync + CIE backfill) before computing GPA
+        api_client.get(reverse('studentportal-my-results'))
+
+        response = api_client.get(reverse('studentportal-my-profile'))
+        assert response.status_code == status.HTTP_200_OK
+        # Grade A -> 9.0 points, 4 credits
+        assert response.data["cgpa"] == 9.0
+        assert response.data["latest_sgpa"] == 9.0

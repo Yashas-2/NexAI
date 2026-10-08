@@ -130,7 +130,7 @@ export const BlueprintHeader: React.FC<BlueprintHeaderProps> = ({
 
   
   const parseTime = (timeStr?: string) => {
-    if (!timeStr) return '09:30';
+    if (!timeStr) return '';
     try {
       const [time, modifier] = timeStr.trim().split(' ');
       if (!modifier) return timeStr;
@@ -139,7 +139,7 @@ export const BlueprintHeader: React.FC<BlueprintHeaderProps> = ({
       if (modifier.toUpperCase() === 'PM') hours = String(parseInt(hours, 10) + 12);
       return `${hours.padStart(2, '0')}:${minutes}`;
     } catch {
-      return '09:30';
+      return '';
     }
   };
 
@@ -159,14 +159,23 @@ export const BlueprintHeader: React.FC<BlueprintHeaderProps> = ({
           subjectGroups[c.subjectCode].push(c);
         });
 
+        const startTime = parseTime(_scopeConfig?.selectedSlots?.[0]?.startTime) || '09:30';
+        let endTime = parseTime(_scopeConfig?.selectedSlots?.[0]?.endTime) || '12:30';
+        // End must be after start — fall back to a 3-hour paper window
+        if (endTime <= startTime) {
+          const [h, m] = startTime.split(':').map(Number);
+          const end = (h + 3) % 24;
+          endTime = `${String(end).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+        }
+
         // Create one allocation entry per subject per room
         Object.entries(subjectGroups).forEach(([subjectCode]) => {
           allocations.push({
             subject_code: subjectCode,
             room_name: room.roomNumber,
             exam_date: room.examDate || _scopeConfig?.startDate || new Date().toISOString().slice(0, 10),
-            start_time: parseTime(_scopeConfig?.selectedSlots?.[0]?.startTime) || '09:30',
-            end_time: parseTime(_scopeConfig?.selectedSlots?.[0]?.endTime) || '12:30',
+            start_time: startTime,
+            end_time: endTime,
             chief_invigilator_email: room.chiefInvigilator?.email || '',
             reliever_invigilator_email: room.relieverInvigilator?.email || '',
           });

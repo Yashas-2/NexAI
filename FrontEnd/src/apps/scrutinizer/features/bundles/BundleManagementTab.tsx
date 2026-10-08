@@ -1,307 +1,422 @@
-import React, { useState } from 'react';
-import { ScrutinyBundle, EvaluatorProfile } from '../../types';
-import { Badge } from '@/components/ui/Badge';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import toast from 'react-hot-toast';
 import {
-  Search,
-  UserCheck,
+  Package,
   Plus,
+  RefreshCw,
+  UserCheck,
   CheckCircle2,
-  AlertTriangle
+  ShieldCheck,
+  AlertTriangle,
 } from 'lucide-react';
-import { AllocateEvaluatorModal } from './components/AllocateEvaluatorModal';
-import { BundleIntakeModal } from './components/BundleIntakeModal';
+import {
+  assignEvaluator,
+  bundleAction,
+  createBundles,
+  errText,
+  fetchBundles,
+  fetchOverview,
+} from '../../api';
+import type { ApiBundle, BundleStatus, OverviewData } from '../../types';
+import { StatusBadge } from '../../statusMeta';
 
-interface BundleManagementTabProps {
-  bundles: ScrutinyBundle[];
-  evaluators: EvaluatorProfile[];
-  onUpdateBundle: (updatedBundle: ScrutinyBundle) => void;
-  onAddBundle: (newBundle: ScrutinyBundle) => void;
-  onNavigateToAudit: (bundle: ScrutinyBundle) => void;
-}
+const FILTERS: { key: 'ALL' | BundleStatus; label: string }[] = [
+  { key: 'ALL', label: 'All' },
+  { key: 'CREATED', label: 'Created' },
+  { key: 'ASSIGNED', label: 'Assigned' },
+  { key: 'IN_PROGRESS', label: 'In Evaluation' },
+  { key: 'COMPLETED', label: 'Awaiting Verification' },
+  { key: 'VERIFIED', label: 'Verified' },
+  { key: 'CERTIFIED', label: 'Certified' },
+  { key: 'DISPATCHED', label: 'Dispatched' },
+];
 
-export const BundleManagementTab: React.FC<BundleManagementTabProps> = ({
-  bundles,
-  evaluators,
-  onUpdateBundle,
-  onAddBundle,
-  onNavigateToAudit,
-}) => {
-  const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState('ALL');
-  const [selectedBundleForAllocation, setSelectedBundleForAllocation] = useState<ScrutinyBundle | null>(null);
-  const [isIntakeModalOpen, setIsIntakeModalOpen] = useState(false);
+export const BundleManagementTab: React.FC = () => {
+  const [overview, setOverview] = useState<OverviewData | null>(null);
+  const [bundles, setBundles] = useState<ApiBundle[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<'ALL' | BundleStatus>('ALL');
+  const [busyId, setBusyId] = useState<string | null>(null);
 
-  const filteredBundles = bundles.filter(b => {
-    if (statusFilter !== 'ALL' && b.status !== statusFilter) return false;
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      return (
-        b.bundleCode.toLowerCase().includes(q) ||
-        b.subjectCode.toLowerCase().includes(q) ||
-        b.subjectTitle.toLowerCase().includes(q)
-      );
+  // Create-bundle form
+  const [subjectKey, setSubjectKey] = useState('');
+  const [bundleSize, setBundleSize] = useState(25);
+  const [creating, setCreating] = useState(false);
+
+  // Assign-evaluator selects (bundleId → evaluatorId)
+  const [assignMap, setAssignMap] = useState<Record<string, string>>({});
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [ov, bs] = await Promise.all([fetchOverview(), fetchBundles()]);
+      setOverview(ov);
+      setBundles(bs);
+    } catch (err) {
+      const msg = errText(err, 'Failed to load bundles');
+      setError(msg);
+      toast.error(msg);
+    } finally {
+      setLoading(false);
     }
-    return true;
-  });
+  }, []);
 
-  const handleAllocateSuccess = (bundleId: string, evaluatorId: string, evaluatorName: string, deadline: string) => {
-    const bundle = bundles.find(b => b.id === bundleId);
-    if (bundle) {
-      const updated: ScrutinyBundle = {
-        ...bundle,
-        assignedEvaluatorId: evaluatorId,
-        assignedEvaluatorName: evaluatorName,
-        valuationDeadline: deadline,
-        status: 'ALLOCATED_TO_EVALUATOR',
-      };
-      onUpdateBundle(updated);
+  useEffect(() => { load(); }, [load]);
+
+  const bundledSubjects = overview?.subjects ?? [];
+  const currentSubject = useMemo(
+    () => bundledSubjects.find(r => `${r.subject_id}|${r.exam_session_id}` === subjectKey),
+    [bundledSubjects, subjectKey],
+  );
+
+  const createBundle = async () => {
+    if (!currentSubject) {
+      toast.error('Select a course first');
+      return;
+    }
+    if (currentSubject.unbundled < 1) {
+      toast.error('No unbundled answer booklets for this course');
+      return;
+    }
+    setCreating(true);
+    try {
+      const res = await createBundles({
+        subject_id: currentSubject.subject_id,
+        exam_session_id: currentSubject.exam_session_id,
+        bundle_size: bundleSize,
+      });
+      toast.success(res.message);
+      await load();
+    } catch (err) {
+      toast.error(errText(err, 'Bundle creation failed'));
+    } finally {
+      setCreating(false);
     }
   };
 
+  const doAssign = async (bundle: ApiBundle) => {
+    const evaluatorId = assignMap[bundle.id];
+    if (!evaluatorId) {
+      toast.error('Pick an evaluator first');
+      return;
+    }
+    setBusyId(bundle.id);
+    try {
+      const res = await assignEvaluator(bundle.id, evaluatorId);
+      toast.success(res.message || 'Evaluator assigned');
+      await load();
+    } catch (err) {
+      toast.error(errText(err, 'Assignment failed'));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const doAction = async (bundle: ApiBundle, action: string, successMsg: string) => {
+    setBusyId(bundle.id);
+    try {
+      await bundleAction(bundle.id, action);
+      toast.success(successMsg);
+      await load();
+    } catch (err) {
+      toast.error(errText(err, 'Action failed'));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  if (loading) {
+    return <div style={{ padding: '48px', textAlign: 'center', color: '#64748B', fontWeight: 700 }}>Loading bundles…</div>;
+  }
+
+  if (error || !overview) {
+    return (
+      <div style={{ background: 'white', borderRadius: '14px', border: '1.5px solid #FECDD3', padding: '32px', textAlign: 'center' }}>
+        <AlertTriangle size={28} color="#E11D48" />
+        <div style={{ fontWeight: 800, marginTop: '8px', color: '#E11D48' }}>{error || 'No data available'}</div>
+        <button onClick={load} style={{ marginTop: '14px', padding: '9px 18px', borderRadius: '9px', border: 'none', background: '#48977F', color: 'white', fontWeight: 800, cursor: 'pointer' }}>
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  const filtered = filter === 'ALL' ? bundles : bundles.filter(b => b.status === filter);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '22px' }}>
-      {/* ── Action & Filter Bar ── */}
+      {/* ── Create Bundle Panel ── */}
       <div style={{
-        background: 'white',
-        borderRadius: '16px',
-        border: '1.5px solid var(--color-border)',
-        padding: '18px 24px',
-        boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        flexWrap: 'wrap',
-        gap: '16px',
+        background: 'white', borderRadius: '16px', border: '1.5px solid var(--color-border)',
+        padding: '20px 24px', boxShadow: '0 2px 8px rgba(0,0,0,0.04)',
       }}>
-        <div style={{ position: 'relative', width: '280px' }}>
-          <Search size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-secondary)' }} />
-          <input
-            type="text"
-            placeholder="Search Bundle Code or Subject..."
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '9px 12px 9px 36px',
-              borderRadius: '8px',
-              border: '1.5px solid var(--color-border)',
-              fontSize: '0.82rem',
-              outline: 'none',
-              boxSizing: 'border-box',
-            }}
-          />
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
+          <div style={{
+            width: 40, height: 40, borderRadius: '10px', background: '#EEF2FF', color: '#4F46E5',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <Package size={20} />
+          </div>
+          <div>
+            <div style={{ fontWeight: 900, fontSize: '0.95rem' }}>Create Bundle from Received Answer Booklets</div>
+            <div style={{ fontSize: '0.76rem', color: '#64748B', fontWeight: 600 }}>
+              Files unbundled SEE answer booklets into numbered bundles (Bundle #001, #002, …).
+            </div>
+          </div>
         </div>
 
-        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-          <select
-            value={statusFilter}
-            onChange={e => setStatusFilter(e.target.value)}
-            style={{ padding: '8px 12px', borderRadius: '8px', border: '1.5px solid var(--color-border)', fontSize: '0.8rem', fontWeight: 600 }}
-          >
-            <option value="ALL">All Bundle Statuses</option>
-            <option value="UNASSIGNED">Unassigned (Needs Evaluator)</option>
-            <option value="ALLOCATED_TO_EVALUATOR">Allocated / In Valuation</option>
-            <option value="EVALUATED_PENDING_SCRUTINY">Evaluated (Pending Scrutiny)</option>
-            <option value="SCRUTINIZED_AND_SEALED">Scrutinized & Certified</option>
-          </select>
+        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '5px', fontSize: '0.74rem', fontWeight: 800, color: '#64748B' }}>
+            Course / SEE Session
+            <select
+              value={subjectKey}
+              onChange={e => setSubjectKey(e.target.value)}
+              style={{ padding: '9px 14px', borderRadius: '9px', border: '1.5px solid var(--color-border)', fontSize: '0.85rem', fontWeight: 700, minWidth: '320px' }}
+            >
+              <option value="">— Select course —</option>
+              {bundledSubjects.map(r => (
+                <option key={`${r.subject_id}|${r.exam_session_id}`} value={`${r.subject_id}|${r.exam_session_id}`}>
+                  {r.subject_code} — {r.exam_session_name} ({r.unbundled} unbundled / {r.received} received)
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '5px', fontSize: '0.74rem', fontWeight: 800, color: '#64748B' }}>
+            Bundle Size
+            <input
+              type="number"
+              min={1}
+              max={500}
+              value={bundleSize}
+              onChange={e => setBundleSize(Math.max(1, parseInt(e.target.value || '1', 10)))}
+              style={{ padding: '9px 14px', borderRadius: '9px', border: '1.5px solid var(--color-border)', fontSize: '0.85rem', fontWeight: 700, width: '110px' }}
+            />
+          </label>
 
           <button
-            onClick={() => setIsIntakeModalOpen(true)}
+            onClick={createBundle}
+            disabled={creating || !subjectKey || (currentSubject?.unbundled ?? 0) < 1}
             style={{
-              padding: '9px 18px',
-              background: 'linear-gradient(135deg, #48977f 0%, #2f6852 100%)',
-              color: 'white',
-              border: 'none',
-              borderRadius: '8px',
-              fontWeight: 800,
-              fontSize: '0.82rem',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              boxShadow: '0 4px 14px rgba(72,151,127,0.3)',
+              padding: '10px 20px', borderRadius: '9px', border: 'none',
+              background: creating || !subjectKey || (currentSubject?.unbundled ?? 0) < 1
+                ? '#94A3B8' : 'linear-gradient(135deg, #4F46E5 0%, #3730A3 100%)',
+              color: 'white', fontWeight: 800, fontSize: '0.82rem',
+              cursor: creating || !subjectKey ? 'not-allowed' : 'pointer',
+              display: 'flex', alignItems: 'center', gap: '6px',
             }}
           >
-            <Plus size={15} /> Ingest New Bundle
+            <Plus size={15} /> {creating ? 'Creating…' : 'Create Bundles'}
           </button>
+
+          {currentSubject && (
+            <span style={{ fontSize: '0.76rem', fontWeight: 700, color: currentSubject.unbundled > 0 ? '#C2410C' : '#64748B' }}>
+              {currentSubject.unbundled} unbundled booklet(s) available
+            </span>
+          )}
         </div>
       </div>
 
-      {/* ── Bundles Management Table ── */}
+      {/* ── Filter Chips ── */}
+      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+        {FILTERS.map(f => {
+          const count = f.key === 'ALL' ? bundles.length : bundles.filter(b => b.status === f.key).length;
+          const active = filter === f.key;
+          return (
+            <button
+              key={f.key}
+              onClick={() => setFilter(f.key)}
+              style={{
+                padding: '7px 14px', borderRadius: '999px', fontSize: '0.76rem', fontWeight: 800,
+                border: `1.5px solid ${active ? '#48977F' : 'var(--color-border)'}`,
+                background: active ? '#48977F' : 'white',
+                color: active ? 'white' : '#64748B', cursor: 'pointer',
+              }}
+            >
+              {f.label} ({count})
+            </button>
+          );
+        })}
+        <button
+          onClick={load}
+          style={{
+            marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px',
+            padding: '7px 14px', borderRadius: '9px', border: '1.5px solid var(--color-border)',
+            background: 'white', color: '#48977F', fontWeight: 800, fontSize: '0.78rem', cursor: 'pointer',
+          }}
+        >
+          <RefreshCw size={13} /> Refresh
+        </button>
+      </div>
+
+      {/* ── Bundles Table ── */}
       <div style={{
-        background: 'white',
-        borderRadius: '16px',
-        border: '1.5px solid var(--color-border)',
-        overflow: 'hidden',
-        boxShadow: '0 2px 10px rgba(0,0,0,0.04)',
+        background: 'white', borderRadius: '16px', border: '1.5px solid var(--color-border)',
+        overflow: 'hidden', boxShadow: '0 2px 10px rgba(0,0,0,0.04)',
       }}>
-        <div style={{ padding: '16px 24px', borderBottom: '1px solid var(--color-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontWeight: 800, fontSize: '0.95rem' }}>
-            Answer Booklet Bundles Custodian Roster ({filteredBundles.length} Bundles)
-          </span>
-          <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
-            Physical & Digital Custody Managed by Central Scrutiny Officer
-          </span>
+        <div style={{ padding: '16px 24px', borderBottom: '1px solid var(--color-border)' }}>
+          <strong style={{ fontSize: '0.95rem' }}>Bundles — Creation, Allocation & Status Tracking</strong>
         </div>
 
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.82rem' }}>
-            <thead style={{ background: '#f8fafc', color: 'var(--color-text-secondary)', fontWeight: 700, borderBottom: '1px solid var(--color-border)' }}>
-              <tr>
-                <th style={{ padding: '14px 20px' }}>Bundle Code</th>
-                <th style={{ padding: '14px 16px' }}>Subject Course</th>
-                <th style={{ padding: '14px 16px' }}>Booklets</th>
-                <th style={{ padding: '14px 16px' }}>Assigned Evaluator</th>
-                <th style={{ padding: '14px 16px' }}>Valuation Progress</th>
-                <th style={{ padding: '14px 16px' }}>Lifecycle Status</th>
-                <th style={{ padding: '14px 20px', textAlign: 'right' }}>Custodian Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredBundles.map(bundle => (
-                <tr key={bundle.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
-                  {/* Bundle Code */}
-                  <td style={{ padding: '14px 20px', fontWeight: 800, fontFamily: 'monospace', color: '#2563eb' }}>
-                    {bundle.bundleCode}
-                  </td>
-
-                  {/* Subject Course */}
-                  <td style={{ padding: '14px 16px' }}>
-                    <div style={{ fontWeight: 800, color: 'var(--color-text-primary)' }}>{bundle.subjectCode}: {bundle.subjectTitle}</div>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)' }}>{bundle.semester} • Exam: {bundle.examDate}</div>
-                  </td>
-
-                  {/* Booklets */}
-                  <td style={{ padding: '14px 16px', fontWeight: 700 }}>
-                    {bundle.totalScripts} Books
-                  </td>
-
-                  {/* Assigned Evaluator */}
-                  <td style={{ padding: '14px 16px' }}>
-                    {bundle.assignedEvaluatorName ? (
-                      <span style={{ fontWeight: 700, color: '#1e293b', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                        <UserCheck size={14} color="#16a34a" /> {bundle.assignedEvaluatorName}
-                      </span>
-                    ) : (
-                      <span style={{ color: '#d97706', fontWeight: 700, fontSize: '0.75rem' }}>
-                        — Unassigned —
-                      </span>
-                    )}
-                  </td>
-
-                  {/* Valuation Progress */}
-                  <td style={{ padding: '14px 16px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', fontWeight: 700 }}>
-                      <span>{bundle.completedScripts} / {bundle.totalScripts}</span>
-                      <span style={{ color: 'var(--color-text-secondary)' }}>({Math.round((bundle.completedScripts / bundle.totalScripts) * 100)}%)</span>
-                    </div>
-                    <div style={{ width: '80px', height: '5px', background: '#e2e8f0', borderRadius: '3px', marginTop: '4px', overflow: 'hidden' }}>
-                      <div style={{ width: `${(bundle.completedScripts / bundle.totalScripts) * 100}%`, height: '100%', background: '#48977f' }} />
-                    </div>
-                  </td>
-
-                  {/* Status Badge */}
-                  <td style={{ padding: '14px 16px' }}>
-                    {bundle.status === 'UNASSIGNED' && <Badge variant="warning">UNASSIGNED</Badge>}
-                    {bundle.status === 'ALLOCATED_TO_EVALUATOR' && <Badge variant="primary">IN VALUATION</Badge>}
-                    {bundle.status === 'IN_EVALUATION' && <Badge variant="primary">IN VALUATION</Badge>}
-                    {bundle.status === 'EVALUATED_PENDING_SCRUTINY' && <Badge variant="danger">READY FOR SCRUTINY</Badge>}
-                    {bundle.status === 'SCRUTINIZED_AND_SEALED' && <Badge variant="success">CERTIFIED ✓</Badge>}
-                  </td>
-
-                  {/* Action */}
-                  <td style={{ padding: '14px 20px', textAlign: 'right' }}>
-                    {bundle.status === 'UNASSIGNED' && (
-                      <button
-                        onClick={() => setSelectedBundleForAllocation(bundle)}
-                        style={{
-                          padding: '6px 14px',
-                          background: 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '6px',
-                          fontWeight: 700,
-                          fontSize: '0.75rem',
-                          cursor: 'pointer',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '4px',
-                          boxShadow: '0 2px 6px rgba(59,130,246,0.25)',
-                        }}
-                      >
-                        <UserCheck size={13} /> Allocate Evaluator
-                      </button>
-                    )}
-
-                    {bundle.status === 'EVALUATED_PENDING_SCRUTINY' && (
-                      <button
-                        onClick={() => onNavigateToAudit(bundle)}
-                        style={{
-                          padding: '6px 14px',
-                          background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '6px',
-                          fontWeight: 700,
-                          fontSize: '0.75rem',
-                          cursor: 'pointer',
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '4px',
-                          boxShadow: '0 2px 6px rgba(245,158,11,0.25)',
-                        }}
-                      >
-                        <AlertTriangle size={13} /> Audit Scrutiny
-                      </button>
-                    )}
-
-                    {bundle.status === 'SCRUTINIZED_AND_SEALED' && (
-                      <span style={{ fontSize: '0.75rem', color: '#16a34a', fontWeight: 700, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                        <CheckCircle2 size={13} /> Dispatched to CoE
-                      </span>
-                    )}
-
-                    {bundle.status === 'ALLOCATED_TO_EVALUATOR' && (
-                      <button
-                        onClick={() => setSelectedBundleForAllocation(bundle)}
-                        style={{
-                          padding: '5px 10px',
-                          background: 'white',
-                          border: '1px solid var(--color-border)',
-                          borderRadius: '6px',
-                          fontSize: '0.72rem',
-                          color: 'var(--color-text-secondary)',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        Reallocate
-                      </button>
-                    )}
-                  </td>
+        {filtered.length === 0 ? (
+          <div style={{ padding: '36px 24px', textAlign: 'center', color: '#64748B' }}>
+            <Package size={26} style={{ margin: '0 auto 8px auto' }} />
+            <div style={{ fontWeight: 800 }}>
+              {bundles.length === 0 ? 'No bundles created yet' : `No bundles with status "${filter}"`}
+            </div>
+            <div style={{ fontSize: '0.78rem', marginTop: '4px' }}>
+              {bundles.length === 0
+                ? 'Create a bundle above to start the valuation pipeline.'
+                : 'Change the filter to see other bundles.'}
+            </div>
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.82rem' }}>
+              <thead style={{ background: '#f8fafc', color: 'var(--color-text-secondary)', fontWeight: 700, borderBottom: '1px solid var(--color-border)' }}>
+                <tr>
+                  <th style={{ padding: '13px 20px' }}>Bundle</th>
+                  <th style={{ padding: '13px 16px' }}>Course / Session</th>
+                  <th style={{ padding: '13px 16px' }}>Status</th>
+                  <th style={{ padding: '13px 16px' }}>Assigned Evaluator</th>
+                  <th style={{ padding: '13px 16px' }}>Access Code</th>
+                  <th style={{ padding: '13px 20px', textAlign: 'right' }}>Action</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {filtered.map(bundle => {
+                  const busy = busyId === bundle.id;
+                  return (
+                    <tr key={bundle.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
+                      <td style={{ padding: '13px 20px', fontWeight: 800, fontFamily: 'monospace', color: '#2563eb' }}>
+                        {bundle.name}
+                      </td>
+                      <td style={{ padding: '13px 16px' }}>
+                        <div style={{ fontWeight: 800 }}>{bundle.subject_code}{bundle.subject_name ? ` — ${bundle.subject_name}` : ''}</div>
+                        <div style={{ fontSize: '0.72rem', color: 'var(--color-text-secondary)' }}>{bundle.exam_session_name || ''}</div>
+                      </td>
+                      <td style={{ padding: '13px 16px' }}>
+                        <StatusBadge status={bundle.status} />
+                      </td>
+                      <td style={{ padding: '13px 16px', fontWeight: 700 }}>
+                        {bundle.evaluator_name || <span style={{ color: '#94A3B8', fontWeight: 600 }}>— unassigned —</span>}
+                      </td>
+                      <td style={{ padding: '13px 16px', fontFamily: 'monospace', fontSize: '0.76rem', fontWeight: 700, color: '#0F172A' }}>
+                        {bundle.access_code || <span style={{ color: '#94A3B8' }}>—</span>}
+                      </td>
+                      <td style={{ padding: '13px 20px', textAlign: 'right' }}>
+                        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', flexWrap: 'wrap', alignItems: 'center' }}>
+                          {(bundle.status === 'CREATED' || !bundle.evaluator_name) && (
+                            <>
+                              <select
+                                value={assignMap[bundle.id] || ''}
+                                onChange={e => setAssignMap(prev => ({ ...prev, [bundle.id]: e.target.value }))}
+                                style={{ padding: '6px 10px', borderRadius: '7px', border: '1.5px solid var(--color-border)', fontSize: '0.76rem', fontWeight: 700, maxWidth: '180px' }}
+                              >
+                                <option value="">Select evaluator…</option>
+                                {overview.evaluators.map(ev => (
+                                  <option key={ev.id} value={ev.id}>
+                                    {ev.full_name} ({ev.active_bundles} active)
+                                  </option>
+                                ))}
+                              </select>
+                              <button
+                                onClick={() => doAssign(bundle)}
+                                disabled={busy}
+                                style={{
+                                  padding: '6px 14px', borderRadius: '7px', border: 'none',
+                                  background: busy ? '#94A3B8' : 'linear-gradient(135deg, #4F46E5 0%, #3730A3 100%)',
+                                  color: 'white', fontWeight: 800, fontSize: '0.75rem',
+                                  cursor: busy ? 'not-allowed' : 'pointer',
+                                  display: 'inline-flex', alignItems: 'center', gap: '4px',
+                                }}
+                              >
+                                <UserCheck size={13} /> Assign
+                              </button>
+                            </>
+                          )}
+
+                          {bundle.status === 'ASSIGNED' && (
+                            <button
+                              onClick={() => doAction(bundle, 'start_evaluation', 'Evaluation started')}
+                              disabled={busy}
+                              style={{
+                                padding: '6px 14px', borderRadius: '7px', border: '1.5px solid #BFDBFE',
+                                background: '#EFF6FF', color: '#1D4ED8', fontWeight: 800, fontSize: '0.75rem',
+                                cursor: busy ? 'not-allowed' : 'pointer',
+                              }}
+                            >
+                              {busy ? '…' : 'Start Evaluation'}
+                            </button>
+                          )}
+
+                          {bundle.status === 'IN_PROGRESS' && (
+                            <button
+                              onClick={() => doAction(bundle, 'complete_evaluation', 'Evaluation marked complete')}
+                              disabled={busy}
+                              style={{
+                                padding: '6px 14px', borderRadius: '7px', border: 'none',
+                                background: busy ? '#94A3B8' : '#0EA5E9',
+                                color: 'white', fontWeight: 800, fontSize: '0.75rem',
+                                cursor: busy ? 'not-allowed' : 'pointer',
+                                display: 'inline-flex', alignItems: 'center', gap: '4px',
+                              }}
+                            >
+                              <CheckCircle2 size={13} /> {busy ? '…' : 'Mark Evaluated'}
+                            </button>
+                          )}
+
+                          {bundle.status === 'COMPLETED' && (
+                            <button
+                              onClick={() => doAction(bundle, 'verify', 'Marks verified')}
+                              disabled={busy}
+                              style={{
+                                padding: '6px 14px', borderRadius: '7px', border: 'none',
+                                background: busy ? '#94A3B8' : 'linear-gradient(135deg, #16a34a 0%, #15803d 100%)',
+                                color: 'white', fontWeight: 800, fontSize: '0.75rem',
+                                cursor: busy ? 'not-allowed' : 'pointer',
+                                display: 'inline-flex', alignItems: 'center', gap: '4px',
+                              }}
+                            >
+                              <ShieldCheck size={13} /> Verify Marks
+                            </button>
+                          )}
+
+                          {bundle.status === 'VERIFIED' && (
+                            <span style={{ fontSize: '0.74rem', fontWeight: 700, color: '#6366F1' }}>
+                              Awaiting CoE certification
+                            </span>
+                          )}
+
+                          {bundle.status === 'CERTIFIED' && (
+                            <span style={{ fontSize: '0.74rem', fontWeight: 700, color: '#15803D' }}>
+                              Certified — awaiting dispatch
+                            </span>
+                          )}
+
+                          {bundle.status === 'DISPATCHED' && (
+                            <span style={{ fontSize: '0.74rem', fontWeight: 700, color: '#166534' }}>
+                              Finalized ✓
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
-      {/* Allocate Evaluator Modal */}
-      {selectedBundleForAllocation && (
-        <AllocateEvaluatorModal
-          bundle={selectedBundleForAllocation}
-          evaluators={evaluators}
-          onAllocateSuccess={handleAllocateSuccess}
-          onClose={() => setSelectedBundleForAllocation(null)}
-        />
-      )}
-
-      {/* Ingest Bundle Modal */}
-      {isIntakeModalOpen && (
-        <BundleIntakeModal
-          onIntakeSuccess={onAddBundle}
-          onClose={() => setIsIntakeModalOpen(false)}
-        />
-      )}
+      {/* ── Status legend ── */}
+      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', fontSize: '0.72rem', color: '#64748B', fontWeight: 700, alignItems: 'center' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}><AlertTriangle size={13} /> Pipeline:</span>
+        <span>Created → Assigned → In Evaluation → Awaiting Verification → Verified → Certified → Dispatched</span>
+      </div>
     </div>
   );
 };

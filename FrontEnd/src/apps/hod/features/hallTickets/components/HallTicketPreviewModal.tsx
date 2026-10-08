@@ -229,13 +229,15 @@ export const HallTicketPreviewModal: React.FC<HallTicketPreviewModalProps> = ({
                         {s.subjectTitle}
                       </td>
                       <td style={{ padding: '8px 10px', borderRight: '1px solid #cbd5e1' }}>
-                        {s.examDate}
+                        {s.examDate || '—'}
                       </td>
                       <td style={{ padding: '8px 10px', borderRight: '1px solid #cbd5e1' }}>
-                        {s.examTime}
+                        {s.examTime || '—'}
                       </td>
                       <td style={{ padding: '8px 10px', fontWeight: 800, color: '#2563eb' }}>
-                        {s.roomAllocated} ({s.deskNumber})
+                        {s.roomAllocated
+                          ? `${s.roomAllocated}${s.deskNumber ? ` (${s.deskNumber})` : ''}`
+                          : 'Hall not allotted yet'}
                       </td>
                     </tr>
                   ))}

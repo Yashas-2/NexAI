@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import AnswerScript, ScriptPage, QuestionGrade
 from users.serializers import UserSerializer
+from django.db.models import Count, Q
 
 class ScriptPageSerializer(serializers.ModelSerializer):
     class Meta:
@@ -40,10 +41,51 @@ from .models import EvaluationBundle
 class EvaluationBundleSerializer(serializers.ModelSerializer):
     evaluator_name = serializers.CharField(source='evaluator.full_name', read_only=True)
     subject_code = serializers.CharField(source='subject.code', read_only=True)
-    
+    subject_name = serializers.CharField(source='subject.name', read_only=True)
+    exam_session_name = serializers.CharField(source='exam_session.name', read_only=True)
+    booklets_total = serializers.SerializerMethodField()
+    booklets_evaluated = serializers.SerializerMethodField()
+    booklets_remaining = serializers.SerializerMethodField()
+    evaluation_status = serializers.SerializerMethodField()
+
     class Meta:
         model = EvaluationBundle
         fields = [
             'id', 'name', 'evaluator', 'evaluator_name', 'subject', 'subject_code',
-            'exam_session', 'created_at', 'status'
+            'subject_name', 'exam_session', 'exam_session_name', 'created_at',
+            'status', 'evaluation_status', 'access_code', 'redeemed_at',
+            'booklets_total', 'booklets_evaluated', 'booklets_remaining',
         ]
+
+    def _progress(self, obj):
+        """(total, evaluated) answer booklets — evaluated = fully graded."""
+        if not hasattr(obj, "_me_progress"):
+            rows = obj.attempts_qs().annotate(
+                n_total=Count("answers"),
+                n_graded=Count("answers", filter=Q(answers__marks_awarded__isnull=False)),
+            )
+            total = evaluated = 0
+            for r in rows:
+                total += 1
+                if r.n_total > 0 and r.n_graded == r.n_total:
+                    evaluated += 1
+            obj._me_progress = (total, evaluated)
+        return obj._me_progress
+
+    def get_booklets_total(self, obj):
+        return self._progress(obj)[0]
+
+    def get_booklets_evaluated(self, obj):
+        return self._progress(obj)[1]
+
+    def get_booklets_remaining(self, obj):
+        total, evaluated = self._progress(obj)
+        return max(total - evaluated, 0)
+
+    def get_evaluation_status(self, obj):
+        """User-facing pipeline status including Partially Evaluated."""
+        if obj.status == "IN_PROGRESS":
+            total, evaluated = self._progress(obj)
+            if 0 < evaluated < total:
+                return "PARTIALLY_EVALUATED"
+        return obj.status

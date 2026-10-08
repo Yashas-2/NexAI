@@ -10,7 +10,7 @@ const ROLE_PATHS: Record<string, string> = {
   HOD: "/hod",
   PAPER_SETTER: "/setter",
   EVALUATOR: "/evaluator",
-  SCRUTINIZER: "/scrutinizer",
+  SCRUTINIZER: "/main-evaluator",
   SCANNING_OFFICER: "/scanning",
   FACULTY: "/faculty",
   INVIGILATOR: "/mobile-app",

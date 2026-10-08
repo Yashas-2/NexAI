@@ -50,11 +50,11 @@ export const CredentialManagementTab: React.FC = () => {
         email: u.email,
         role: u.role as OfficerRole,
         department: u.department?.name || 'Central Unit',
-        designation: u.role === 'HOD' ? 'Head of Department' : u.role === 'SCRUTINIZER' ? 'Scrutinizer' : u.role === 'SCANNING_OFFICER' ? 'Scanning Officer' : u.role === 'EVALUATOR' ? 'Evaluator' : u.role === 'INVIGILATOR' ? 'Invigilator' : u.role === 'PAPER_SETTER' ? 'Paper Setter' : u.role === 'STUDENT' ? 'Student' : u.role === 'ADMISSION' ? 'Admission Officer' : u.role === 'ADMIN' ? 'System Admin' : 'Faculty',
+        designation: u.role === 'HOD' ? 'Head of Department' : u.role === 'SCRUTINIZER' ? 'Main Evaluator' : u.role === 'SCANNING_OFFICER' ? 'Scanning Officer' : u.role === 'EVALUATOR' ? 'Evaluator' : u.role === 'INVIGILATOR' ? 'Invigilator' : u.role === 'PAPER_SETTER' ? 'Paper Setter' : u.role === 'STUDENT' ? 'Student' : u.role === 'ADMISSION' ? 'Admission Officer' : u.role === 'ADMIN' ? 'System Admin' : 'Faculty',
         status: u.is_active ? 'ACTIVE' : 'SUSPENDED',
         tempPassword: u.plain_password || '••••••••••••',
         issuedAt: new Date(u.created_at).toLocaleDateString(),
-        portalPath: u.role === 'HOD' ? '/hod' : u.role === 'SCRUTINIZER' ? '/scrutinizer' : u.role === 'SCANNING_OFFICER' ? '/scanning' : u.role === 'EVALUATOR' ? '/evaluator' : u.role === 'STUDENT' ? '/mobile-app' : u.role === 'ADMISSION' ? '/admission' : u.role === 'ADMIN' ? '/admin' : '/faculty',
+        portalPath: u.role === 'HOD' ? '/hod' : u.role === 'SCRUTINIZER' ? '/main-evaluator' : u.role === 'SCANNING_OFFICER' ? '/scanning' : u.role === 'EVALUATOR' ? '/evaluator' : u.role === 'STUDENT' ? '/mobile-app' : u.role === 'ADMISSION' ? '/admission' : u.role === 'ADMIN' ? '/admin' : '/faculty',
       }));
       setOfficers(mapped);
     } catch (e) {
@@ -206,7 +206,7 @@ export const CredentialManagementTab: React.FC = () => {
       <div style={{ position: 'relative', zIndex: 1 }}>
         <PageHeader
           title="Institutional User Credentials & Portal Access Control"
-          subtitle="Controller of Examinations (CoE) Administrative Console: Generate, provision, and reset official login credentials for HODs, Scrutinizers, and Scanning Desks."
+          subtitle="Controller of Examinations (CoE) Administrative Console: Generate, provision, and reset official login credentials for HODs, Main Evaluators, and Scanning Desks."
           icon={<KeyRound size={26} />}
           accentColor="#0284C7"
           action={
@@ -263,13 +263,13 @@ export const CredentialManagementTab: React.FC = () => {
 
           <div style={{ background: '#FFFFFF', padding: '18px 22px', borderRadius: '16px', border: '1.5px solid #E2E8F0', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: '0.75rem', fontWeight: 800, color: '#64748B' }}>QP SCRUTINIZERS</span>
+              <span style={{ fontSize: '0.75rem', fontWeight: 800, color: '#64748B' }}>MAIN EVALUATORS</span>
               <FileCheck2 size={18} color="#D97706" />
             </div>
             <div style={{ fontSize: '1.6rem', fontWeight: 900, color: '#D97706', marginTop: '6px' }}>
               {scrutCount}
             </div>
-            <div style={{ fontSize: '0.72rem', color: '#64748B', marginTop: '2px' }}>Board of Examination Scrutiny</div>
+            <div style={{ fontSize: '0.72rem', color: '#64748B', marginTop: '2px' }}>SEE Answer Booklet & Bundle Custodian</div>
           </div>
 
           <div style={{ background: '#FFFFFF', padding: '18px 22px', borderRadius: '16px', border: '1.5px solid #E2E8F0', boxShadow: '0 2px 8px rgba(0,0,0,0.02)' }}>
@@ -343,7 +343,7 @@ export const CredentialManagementTab: React.FC = () => {
                 color: roleFilter === 'SCRUTINIZER' ? 'white' : '#64748B',
               }}
             >
-              Scrutinizers ({scrutCount})
+              Main Evaluators ({scrutCount})
             </button>
             <button
               onClick={() => setRoleFilter('SCANNING_OFFICER')}
@@ -459,7 +459,7 @@ export const CredentialManagementTab: React.FC = () => {
 
                     const roleBadge = {
                       HOD: { bg: '#EEF2FF', text: '#4F46E5', label: 'HOD PORTAL (/hod)' },
-                      SCRUTINIZER: { bg: '#FEF3C7', text: '#B45309', label: 'SCRUTINIZER (/scrutinizer)' },
+                      SCRUTINIZER: { bg: '#FEF3C7', text: '#B45309', label: 'SCRUTINIZER (/main-evaluator)' },
                       SCANNING_OFFICER: { bg: '#ECFDF5', text: '#047857', label: 'SCANNING DESK (/scanning)' },
                     }[officer.role] || { bg: '#F1F5F9', text: '#475569', label: `${officer.role} PORTAL` };
 
@@ -695,7 +695,7 @@ export const CredentialManagementTab: React.FC = () => {
                     Issue Institutional Portal Credentials
                   </h3>
                   <p style={{ margin: 0, fontSize: '0.75rem', color: '#64748B' }}>
-                    Provision officer credentials for HOD, Scrutinizer, or Scanning Desks
+                    Provision officer credentials for HOD, Main Evaluator, or Scanning Desks
                   </p>
                 </div>
               </div>
@@ -722,7 +722,7 @@ export const CredentialManagementTab: React.FC = () => {
                       setNewOfficerRole(r);
                       setNewOfficerPassword(generateRandomPassword(r));
                       if (r === 'HOD') setNewOfficerDesignation('Professor & Head of Department');
-                      else if (r === 'SCRUTINIZER') setNewOfficerDesignation('Question Paper Scrutiny Officer');
+                      else if (r === 'SCRUTINIZER') setNewOfficerDesignation('Main Evaluator (SEE)');
                       else if (r === 'SCANNING_OFFICER') setNewOfficerDesignation('Scanning Center Superintendent');
                       else if (r === 'EVALUATOR') setNewOfficerDesignation('Evaluator');
                       else if (r === 'INVIGILATOR') setNewOfficerDesignation('Invigilator');
@@ -736,7 +736,7 @@ export const CredentialManagementTab: React.FC = () => {
                     style={{ width: '100%', padding: '9px 12px', borderRadius: '8px', border: '1.5px solid #CBD5E1', fontSize: '0.85rem', fontWeight: 800, background: 'white' }}
                   >
                     <option value="HOD">Head of Department (HOD Portal)</option>
-                    <option value="SCRUTINIZER">QP Scrutinizer (Board of Examination Scrutiny)</option>
+                    <option value="SCRUTINIZER">Main Evaluator (SEE Answer Booklet & Bundle Custodian)</option>
                     <option value="SCANNING_OFFICER">Scanning Center Superintendent (Digital Scanning Center)</option>
                     <option value="EVALUATOR">Evaluator (Valuation Portal)</option>
                     <option value="INVIGILATOR">Invigilator (Invigilation Portal)</option>

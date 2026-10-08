@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuthStore } from '@/store/authStore';
-import { api } from '@/services/api';
 import { useNavigate } from 'react-router-dom';
+import { api } from '@/services/api';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { PageHeader } from '@/components/ui/PageHeader';
 import {
@@ -16,15 +16,12 @@ import {
 import {
   INITIAL_ASSIGNED_COURSES,
   INITIAL_STUDENT_ROSTER,
-  INITIAL_FACULTY_CIE_PAPERS,
-  INITIAL_DAILY_ATTENDANCE_LOGS,
   INITIAL_CIE_SCANNED_SCRIPTS,
 } from './mockData';
 import {
   AssignedCourse,
   StudentGradeRecord,
   FacultyCIEPaper,
-  DailyAttendanceRecord,
   CIEScannedScript,
 } from './types';
 import toast from 'react-hot-toast';
@@ -35,7 +32,7 @@ import { StudentRosterMarksTab } from './features/students/StudentRosterMarksTab
 import { CIEQuestionPapersTab } from './features/cieQuestionPapers/CIEQuestionPapersTab';
 import { CreateCIEPaperModal } from './features/cieQuestionPapers/components/CreateCIEPaperModal';
 import { CIEEvaluationTab } from './features/cieEvaluation/CIEEvaluationTab';
-import { SEEValuationGateTab } from './features/seeValuation/SEEValuationGateTab';
+import { SEESubmissionsTab } from './features/seeValuation/SEESubmissionsTab';
 import { HODPaperAuditBanner } from './components/HODPaperAuditBanner';
 import { FacultyVectorBackground } from './components/FacultyVectorBackground';
 
@@ -53,9 +50,6 @@ export default function FacultyDashboard() {
   const [students, setStudents] = useState<StudentGradeRecord[]>(INITIAL_STUDENT_ROSTER);
   const [saving, setSaving] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-
-  // Daily Attendance History
-  const [attendanceHistory, setAttendanceHistory] = useState<DailyAttendanceRecord[]>(INITIAL_DAILY_ATTENDANCE_LOGS);
 
   // CIE Scanned Answer Scripts for Correction Studio
   const [scannedScripts, setScannedScripts] = useState<CIEScannedScript[]>(INITIAL_CIE_SCANNED_SCRIPTS);
@@ -226,7 +220,7 @@ export default function FacultyDashboard() {
             courseCode: course.code,
             usn: enroll.student_usn,
             name: enroll.student_name,
-            attendancePercent: enroll.attendance_percentage !== null && enroll.attendance_percentage !== undefined ? enroll.attendance_percentage : 100,
+            attendancePercent: enroll.attendance_percentage !== null && enroll.attendance_percentage !== undefined ? enroll.attendance_percentage : '',
             cie1,
             cie2,
             cie3,
@@ -317,9 +311,6 @@ export default function FacultyDashboard() {
       fetchSubmissions();
     }
   }, [selectedCourseCode, courses, activeTab]);
-
-  const [inputSessionKey, setInputSessionKey] = useState('');
-  const [isValidatingKey, setIsValidatingKey] = useState(false);
 
   // Modal State for CIE Paper Creator
   const [isCreatePaperOpen, setIsCreatePaperOpen] = useState(false);
@@ -415,28 +406,6 @@ export default function FacultyDashboard() {
     toast.success('Draft paper deleted successfully');
   };
 
-  // Handler: Resubmit Paper for Re-Audit after revising
-  const handleResubmitForReaudit = (paperId: string) => {
-    const target = ciePapers.find(p => p.id === paperId);
-    if (!target) return;
-
-    const updated = ciePapers.map(p =>
-      p.id === paperId
-        ? {
-            ...p,
-            status: 'SUBMITTED_TO_HOD' as const,
-            submittedAt: `${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} (Resubmitted for Re-Audit)`,
-          }
-        : p
-    );
-
-    saveCIEPapers(updated);
-    toast.success(`Question paper for ${target.courseCode} (${target.testType}) resubmitted to HOD for Re-Audit!`, {
-      icon: '🔄',
-      duration: 4000,
-    });
-  };
-
   // Handler: Script Evaluation Complete (Automatically syncs to Student Roster!)
   const handleScriptEvaluationComplete = (
     awardedTotal: number,
@@ -494,29 +463,6 @@ export default function FacultyDashboard() {
     } finally {
       setSaving(false);
     }
-  };
-
-  // Handler: Validate SEE Session Key & Transition to Evaluator Studio
-  const handleValidateSessionKey = (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleanKey = inputSessionKey.trim().toUpperCase();
-
-    if (!cleanKey) {
-      toast.error('Please enter a valid CoE Evaluation Session Key.');
-      return;
-    }
-
-    setIsValidatingKey(true);
-
-    setTimeout(() => {
-      setIsValidatingKey(false);
-      if (cleanKey.includes('EVAL') || cleanKey.length >= 8) {
-        toast.success('Session key verified! Launching Digital Evaluation Studio...');
-        navigate(`/evaluator?sessionKey=${cleanKey}&subject=${selectedCourseCode}&evaluator=${encodeURIComponent(user?.full_name || 'Faculty Evaluator')}`);
-      } else {
-        toast.error('Invalid or expired Session Key. Please check the key issued by CoE.');
-      }
-    }, 600);
   };
 
   const belowAttendanceCount = students.filter(
@@ -604,7 +550,7 @@ export default function FacultyDashboard() {
     },
     {
       id: 'SEE_VALUATION',
-      label: 'SEE Evaluator Studio',
+      label: 'SEE Valuation Studio',
       icon: <KeyRound size={20} />,
       badge: (
         <span style={{
@@ -615,7 +561,7 @@ export default function FacultyDashboard() {
           fontSize: '0.68rem',
           fontWeight: 800
         }}>
-          OTP
+          LIVE
         </span>
       )
     },
@@ -700,8 +646,8 @@ export default function FacultyDashboard() {
       accentColor: '#2563EB',
     },
     SEE_VALUATION: {
-      title: 'Semester End Examination (SEE) Valuation Studio Gate',
-      subtitle: 'Cryptographic single-session OTP key gateway for autonomous digital answer script evaluation.',
+      title: 'SEE Valuation — Submissions & Distribution',
+      subtitle: 'View submitted digital SEE answer scripts (handwriting + OCR), award marks, and distribute valuation to evaluators.',
       icon: <KeyRound size={26} />,
       accentColor: '#059669',
     },
@@ -793,14 +739,27 @@ export default function FacultyDashboard() {
             />
           )}
 
-          {/* ══════════════ TAB 5: SEE VALUATION GATE ══════════════ */}
+          {/* ══════════════ TAB 5: SEE VALUATION (submissions & distribution) ══════════════ */}
           {activeTab === 'SEE_VALUATION' && (
-            <SEEValuationGateTab
+            <SEESubmissionsTab
+              courses={courses}
               selectedCourseCode={selectedCourseCode}
-              inputSessionKey={inputSessionKey}
-              isValidatingKey={isValidatingKey}
-              onInputSessionKeyChange={setInputSessionKey}
-              onValidateSessionKey={handleValidateSessionKey}
+              onSelectCourseCode={setSelectedCourseCode}
+              examSessionId={activeExamSessionId}
+              onRedeemSuccess={({ id, name, subject_code, subject_id, exam_session_name, evaluator_name, access_code, exam_session }) => {
+                // Redirect to /evaluator with bundle info as query params
+                const params = new URLSearchParams({
+                  bundleId: id,
+                  bundleName: name,
+                  subjectCode: subject_code,
+                  subjectId: subject_id,
+                  examSessionName: exam_session_name,
+                  examSessionId: exam_session || '',
+                  evaluatorName: evaluator_name || '',
+                  accessCode: access_code || '',
+                });
+                navigate(`/evaluator?${params.toString()}`);
+              }}
             />
           )}
         </div>

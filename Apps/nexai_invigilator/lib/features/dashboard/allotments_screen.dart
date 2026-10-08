@@ -111,6 +111,8 @@ class _AllotmentsScreenState extends State<AllotmentsScreen> {
                         final room = duty['room_name'] ?? 'TBA';
                         final start = duty['start_time'] != null ? duty['start_time'].toString().substring(0, 5) : 'TBA';
                         final end = duty['end_time'] != null ? duty['end_time'].toString().substring(0, 5) : 'TBA';
+                        final subjectCode = duty['subject_code'] ?? '';
+                        final subjectName = duty['subject_name'] ?? '';
 
                         return Card(
                           margin: const EdgeInsets.only(bottom: 12),
@@ -148,7 +150,23 @@ class _AllotmentsScreenState extends State<AllotmentsScreen> {
                                       ),
                                     ],
                                   ),
-                                  const SizedBox(height: 12),
+                                  const SizedBox(height: 8),
+                                  Row(
+                                    children: [
+                                      const Icon(Icons.menu_book, size: 16, color: AppTheme.textSecondary),
+                                      const SizedBox(width: 6),
+                                      Expanded(
+                                        child: Text(
+                                          subjectCode.isEmpty
+                                              ? 'Subject TBA'
+                                              : '$subjectCode • $subjectName',
+                                          style: const TextStyle(color: AppTheme.textSecondary, fontWeight: FontWeight.w600),
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 8),
                                   Row(
                                     children: [
                                       const Icon(Icons.access_time, size: 16, color: AppTheme.textSecondary),

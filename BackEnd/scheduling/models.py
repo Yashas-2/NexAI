@@ -456,3 +456,92 @@ class ExamIncidentReport(models.Model):
     def __str__(self):
         return f"{self.infraction_type} - {self.student.usn}"
 
+
+# ─── Reschedule audit trail ──────────────────────────────────────────────────
+ACTIVE_SLOT_STATUSES = (TimetableSlot.SlotStatus.SCHEDULED, TimetableSlot.SlotStatus.CONFIRMED)
+
+
+class TimetableRescheduleLog(models.Model):
+    """
+    Immutable audit record created whenever an existing TimetableSlot is
+    archived (status -> RESCHEDULED/CANCELLED) instead of being deleted.
+    Old schedule stays queryable for audit; student-facing queries only
+    read ACTIVE_SLOT_STATUSES.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    slot = models.ForeignKey(
+        TimetableSlot,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reschedule_logs",
+    )
+    exam_session = models.ForeignKey(
+        ExamSession,
+        on_delete=models.CASCADE,
+        related_name="reschedule_logs",
+    )
+    subject = models.ForeignKey(
+        Subject,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reschedule_logs",
+    )
+    # Snapshot of the archived schedule (survives even if the slot row is removed)
+    subject_code = models.CharField(max_length=20, blank=True, default="")
+    subject_name = models.CharField(max_length=200, blank=True, default="")
+    room_name = models.CharField(max_length=100, blank=True, default="")
+    exam_date = models.DateField(null=True, blank=True)
+    start_time = models.TimeField(null=True, blank=True)
+    end_time = models.TimeField(null=True, blank=True)
+    previous_status = models.CharField(max_length=15, blank=True, default="")
+    reason = models.CharField(max_length=255, blank=True, default="")
+    changed_by = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reschedule_logs",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "scheduling_timetable_reschedule_log"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return (
+            f"{self.subject_code} {self.exam_date} {self.start_time} "
+            f"archived ({self.previous_status}) - {self.reason}"
+        )
+
+
+def archive_slots(queryset, reason="", user=None):
+    """
+    Archive timetable slots instead of deleting them: status -> RESCHEDULED
+    plus a TimetableRescheduleLog audit row. Returns number archived.
+    """
+    archived = 0
+    for slot in queryset.select_related("subject", "room", "exam_session"):
+        if slot.status == TimetableSlot.SlotStatus.RESCHEDULED:
+            continue
+        TimetableRescheduleLog.objects.create(
+            slot=slot,
+            exam_session_id=slot.exam_session_id,
+            subject_id=slot.subject_id,
+            subject_code=slot.subject.code if slot.subject else "",
+            subject_name=slot.subject.name if slot.subject else "",
+            room_name=slot.room.name if slot.room else "",
+            exam_date=slot.exam_date,
+            start_time=slot.start_time,
+            end_time=slot.end_time,
+            previous_status=slot.status,
+            reason=reason or "Schedule regenerated",
+            changed_by=user,
+        )
+        slot.status = TimetableSlot.SlotStatus.RESCHEDULED
+        slot.save(update_fields=["status"])
+        archived += 1
+    return archived
+

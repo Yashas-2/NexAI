@@ -63,7 +63,7 @@ export const VaultTab: React.FC<VaultTabProps> = () => {
           }
 
           // Map paper
-          const isVaulted = ['ENCRYPTED', 'DISTRIBUTED'].includes(p.status);
+          const isVaulted = ['SUBMITTED', 'APPROVED', 'ENCRYPTED', 'DISTRIBUTED'].includes(p.status);
           if (isVaulted) {
              subjectsMap[subCode].setsAvailable += 1;
           }
@@ -88,7 +88,17 @@ export const VaultTab: React.FC<VaultTabProps> = () => {
             totalMarks: p.total_marks || 100,
             durationMinutes: p.duration_mins || 180,
             questionsCount: p.questions ? p.questions.length : 0,
-            questions: p.questions || [],
+                        questions: (p.questions || []).map((q: any) => ({
+              id: q.id,
+              number: q.question_number,
+              part: q.part || '',
+              section: q.section || 'Part A',
+              text: q.text_content,
+              marks: q.marks,
+              bloomsLevel: q.bloom_level === 'REMEMBER' ? 'Remember' : q.bloom_level === 'UNDERSTAND' ? 'Understand' : q.bloom_level === 'APPLY' ? 'Apply' : q.bloom_level === 'ANALYZE' ? 'Analyze' : q.bloom_level === 'EVALUATE' ? 'Evaluate' : 'Create',
+              coMapping: q.co_mapping || 'CO1',
+              unitMapping: q.unit_mapping || 'Unit 1'
+            })),
             isDecrypted: false
           });
 

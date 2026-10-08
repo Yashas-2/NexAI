@@ -117,13 +117,24 @@ export default function SetterWorkspace() {
 
     // SYNC to backend API immediately
     if (updatedDraft.assignmentId && String(updatedDraft.assignmentId).length > 2) {
-      api.post(`/vault/question-papers/${updatedDraft.assignmentId}/sync_questions/`, {
-        questions: updatedDraft.questions
-      }).then(res => {
-        console.log("Draft saved successfully to backend", res.data);
-      }).catch(err => {
-        console.error("Failed to sync draft to backend", err);
-      });
+      if (updatedDraft.status === 'SIGNED_AND_VAULTED') {
+        api.post(`/vault/question-papers/${updatedDraft.assignmentId}/lock_and_submit/`, {
+          signature_pin: '7782-9910',
+          key_unlock_timestamp: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+        }).then(res => {
+          console.log("Paper successfully locked and submitted to CoE", res.data);
+        }).catch(err => {
+          console.error("Failed to lock paper", err);
+        });
+      } else {
+        api.post(`/vault/question-papers/${updatedDraft.assignmentId}/sync_questions/`, {
+          questions: updatedDraft.questions
+        }).then(res => {
+          console.log("Draft saved successfully to backend", res.data);
+        }).catch(err => {
+          console.error("Failed to sync draft to backend", err);
+        });
+      }
     }
 
     // Update assignment submission count if signed

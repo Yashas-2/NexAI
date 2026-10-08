@@ -180,6 +180,7 @@ class _StudentDashboardTab extends StatefulWidget {
 class _StudentDashboardTabState extends State<_StudentDashboardTab> {
   Map<String, dynamic>? studentProfile;
   List<dynamic> _hallTickets = [];
+  List<dynamic> _notifications = [];
   bool _isLoading = true;
 
   @override
@@ -192,10 +193,18 @@ class _StudentDashboardTabState extends State<_StudentDashboardTab> {
     try {
       final profileData = await ApiService.get('/student/portal/my_profile/');
       final ticketsData = await ApiService.get('/student/portal/my_hall_tickets/');
+      List<dynamic> notifications = [];
+      try {
+        final notifData = await ApiService.get('/notifications/');
+        notifications = notifData is List ? notifData : [];
+      } catch (_) {
+        // Notifications are non-critical — never block the dashboard
+      }
       if (mounted) {
         setState(() {
           studentProfile = profileData;
           _hallTickets = ticketsData is List ? ticketsData : [];
+          _notifications = notifications;
           _isLoading = false;
         });
       }
@@ -220,6 +229,99 @@ class _StudentDashboardTabState extends State<_StudentDashboardTab> {
     }
   }
 
+  int get _unreadCount => _notifications.where((n) => n['is_read'] == false).length;
+
+  Future<void> _showNotifications() async {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => Container(
+        height: MediaQuery.of(context).size.height * 0.6,
+        decoration: const BoxDecoration(
+          color: AppTheme.bgSurface,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        child: Column(
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 12),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(color: Colors.grey.shade300, borderRadius: BorderRadius.circular(2)),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(18),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Exam Notifications', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+                  if (_unreadCount > 0)
+                    TextButton(
+                      onPressed: () async {
+                        try {
+                          await ApiService.post('/notifications/mark_all_read/', {});
+                          if (mounted) {
+                            Navigator.pop(context);
+                            _fetchData();
+                          }
+                        } catch (e) {
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Failed: $e'), backgroundColor: Colors.red),
+                            );
+                          }
+                        }
+                      },
+                      child: const Text('Mark all read'),
+                    ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: _notifications.isEmpty
+                  ? const Center(
+                      child: Text('No notifications yet.', style: TextStyle(color: AppTheme.textSecondary)),
+                    )
+                  : ListView.separated(
+                      padding: const EdgeInsets.all(16),
+                      itemCount: _notifications.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        final n = _notifications[index];
+                        final isUnread = n['is_read'] == false;
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(
+                            isUnread ? Icons.mail : Icons.mark_email_read_outlined,
+                            color: isUnread ? AppTheme.primary : AppTheme.textSecondary,
+                          ),
+                          title: Text(
+                            '${n['title'] ?? ''}',
+                            style: TextStyle(
+                              fontWeight: isUnread ? FontWeight.w800 : FontWeight.w600,
+                              fontSize: 13,
+                            ),
+                          ),
+                          subtitle: Text(
+                            '${n['message'] ?? ''}',
+                            style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
+                          ),
+                          trailing: Text(
+                            '${n['created_at'] ?? ''}'.replaceFirst('T', ' ').split('.').first,
+                            style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -232,25 +334,55 @@ class _StudentDashboardTabState extends State<_StudentDashboardTab> {
     final fullName = student['name'] ?? 'Student';
     final usn = student['usn'] ?? '';
     final semester = 'Semester ${student['semester'] ?? ''}';
-    final program = 'B.Tech - ${student['department'] ?? ''}';
+    final department = '${student['department'] ?? ''}';
+    final batchYear = student['batch_year'];
+    final program = batchYear != null ? '$department • Batch $batchYear' : department;
     final initials = fullName.split(' ').map((e) => e.isNotEmpty ? e[0] : '').take(2).join('').toUpperCase();
+    final cgpa = student['cgpa'];
     
-    // Build exam list from real hall tickets
+    // Build exam list from real hall tickets (active schedule only —
+    // the backend already excludes rescheduled/cancelled slots)
     final List<Map<String, dynamic>> exams = [];
     for (final ticket in _hallTickets) {
       final schedule = ticket['schedule'] ?? ticket['slots'] ?? [];
       for (final slot in schedule) {
+        final examDate = slot['exam_date'] ?? slot['date'];
+        // Only scheduled exams — entries without a published date are hidden
+        if (examDate == null || '$examDate'.trim().isEmpty) continue;
         exams.add({
           'subject_code': slot['subject_code'] ?? '',
           'subject_name': slot['subject_name'] ?? slot['subject_title'] ?? '',
-          'exam_date': slot['exam_date'] ?? slot['date'] ?? '',
-          'exam_time': slot['exam_time'] ?? '${slot['start_time'] ?? ''} - ${slot['end_time'] ?? ''}',
-          'room': slot['room'] ?? slot['room_number'] ?? '',
-          'seat': slot['seat'] ?? slot['desk_number'] ?? '',
+          'exam_date': examDate,
+          'exam_time': slot['exam_time'],
+          'start_time': slot['start_time'],
+          'room': slot['room'],
+          'seat': slot['seat'],
           'question_paper_id': slot['question_paper_id'],
+          'is_cie': slot['is_cie'] != false,
+          '_start': _parseExamStart(examDate, slot['start_time']),
         });
       }
     }
+
+    // Sort chronologically (exams without a date go last)
+    exams.sort((a, b) {
+      final da = a['_start'] as DateTime?;
+      final db = b['_start'] as DateTime?;
+      if (da == null && db == null) return 0;
+      if (da == null) return 1;
+      if (db == null) return -1;
+      return da.compareTo(db);
+    });
+
+    final now = DateTime.now();
+    final upcomingExams = exams
+        .where((e) => e['_start'] != null && (e['_start'] as DateTime).isAfter(now))
+        .toList();
+    final nextExam = upcomingExams.isNotEmpty ? upcomingExams.first : null;
+    final Duration? countdown = nextExam != null
+        ? (nextExam['_start'] as DateTime).difference(now)
+        : null;
+    final hasCgpa = cgpa != null && cgpa.toString() != 'null';
 
     return Scaffold(
       backgroundColor: AppTheme.bgBase,
@@ -267,12 +399,12 @@ class _StudentDashboardTabState extends State<_StudentDashboardTab> {
         ),
         actions: [
           IconButton(
-            onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('No unread exam notifications')),
-              );
-            },
-            icon: const Icon(Icons.notifications_none_rounded),
+            onPressed: _showNotifications,
+            icon: Badge(
+              isLabelVisible: _unreadCount > 0,
+              label: Text('$_unreadCount'),
+              child: const Icon(Icons.notifications_none_rounded),
+            ),
           ),
           IconButton(
             onPressed: () async {
@@ -351,7 +483,10 @@ class _StudentDashboardTabState extends State<_StudentDashboardTab> {
                     child: Column(
                       children: [
                         const Text('CGPA', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w800, color: AppTheme.primaryDark)),
-                        Text('${student['cgpa'] ?? 'N/A'}', style: const TextStyle(fontWeight: FontWeight.w900, color: AppTheme.primaryDark, fontSize: 14)),
+                        Text(
+                          hasCgpa ? double.parse(cgpa.toString()).toStringAsFixed(2) : '—',
+                          style: const TextStyle(fontWeight: FontWeight.w900, color: AppTheme.primaryDark, fontSize: 14),
+                        ),
                       ],
                     ),
                   ),
@@ -362,7 +497,7 @@ class _StudentDashboardTabState extends State<_StudentDashboardTab> {
             const SizedBox(height: 18),
 
             // Active Next Exam Countdown Card
-            if (exams.isNotEmpty) ...[
+            if (nextExam != null && countdown != null) ...[
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(20),
@@ -403,20 +538,32 @@ class _StudentDashboardTabState extends State<_StudentDashboardTab> {
                             ],
                           ),
                         ),
-                        Text(exams.first['exam_date'] ?? '', style: const TextStyle(color: Colors.white70, fontSize: 11)),
+                        Text(nextExam['exam_date'] ?? 'Date TBA', style: const TextStyle(color: Colors.white70, fontSize: 11)),
                       ],
                     ),
                     const SizedBox(height: 12),
                     Text(
-                      '${exams.first['subject_code']}: ${exams.first['subject_name']}',
+                      '${nextExam['subject_code']}: ${nextExam['subject_name']}',
                       style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 17),
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      '${exams.first['room']} • Seat ${exams.first['seat']}',
+                      '${nextExam['room'] ?? 'Room TBA'} • Seat ${nextExam['seat'] ?? 'TBA'}',
                       style: const TextStyle(color: Color(0xFF4ADE80), fontWeight: FontWeight.w700, fontSize: 13),
                     ),
                     const SizedBox(height: 16),
+
+                    // Real countdown to the exam start
+                    Row(
+                      children: [
+                        _buildCountdownPill('${countdown.inDays}', 'DAYS'),
+                        const SizedBox(width: 10),
+                        _buildCountdownPill('${countdown.inHours % 24}', 'HOURS'),
+                        const SizedBox(width: 10),
+                        _buildCountdownPill('${countdown.inMinutes % 60}', 'MINS'),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
 
                     // Time Slot
                     Container(
@@ -430,8 +577,31 @@ class _StudentDashboardTabState extends State<_StudentDashboardTab> {
                         children: [
                           const Icon(Icons.access_time, color: Colors.white70, size: 14),
                           const SizedBox(width: 6),
-                          Text(exams.first['exam_time'] ?? '', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13)),
+                          Text(nextExam['exam_time'] ?? 'Time TBA', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13)),
                         ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 22),
+            ] else if (exams.isNotEmpty) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: AppTheme.bgSurface,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: AppTheme.cardBorder),
+                ),
+                child: const Row(
+                  children: [
+                    Icon(Icons.event_available_outlined, color: AppTheme.textSecondary, size: 18),
+                    SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'No upcoming exams — all scheduled exams have concluded.',
+                        style: TextStyle(color: AppTheme.textSecondary, fontSize: 12, fontWeight: FontWeight.w600),
                       ),
                     ),
                   ],
@@ -480,9 +650,9 @@ class _StudentDashboardTabState extends State<_StudentDashboardTab> {
                         children: [
                           Text('${exam['subject_code']}: ${exam['subject_name']}', style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 13)),
                           const SizedBox(height: 2),
-                          Text('${exam['exam_date']} • ${exam['exam_time']}', style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
+                          Text('${exam['exam_date'] ?? 'Date TBA'} • ${exam['exam_time'] ?? 'Time TBA'}', style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
                           const SizedBox(height: 2),
-                          Text(exam['room'] ?? '', style: const TextStyle(color: AppTheme.accentBlue, fontSize: 11, fontWeight: FontWeight.w600)),
+                          Text('${exam['room'] ?? 'Room TBA'}', style: const TextStyle(color: AppTheme.accentBlue, fontSize: 11, fontWeight: FontWeight.w600)),
                         ],
                       ),
                     ),
@@ -493,7 +663,7 @@ class _StudentDashboardTabState extends State<_StudentDashboardTab> {
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Text(
-                        exam['seat'] ?? '',
+                        '${exam['seat'] ?? '—'}',
                         style: const TextStyle(color: AppTheme.primaryDark, fontWeight: FontWeight.w900, fontSize: 12),
                       ),
                     ),
@@ -506,6 +676,23 @@ class _StudentDashboardTabState extends State<_StudentDashboardTab> {
       ),
       ),
     );
+  }
+
+  static DateTime? _parseExamStart(dynamic dateStr, dynamic startTime) {
+    if (dateStr == null) return null;
+    DateTime? date;
+    try {
+      date = DateTime.parse(dateStr.toString());
+    } catch (_) {
+      return null;
+    }
+    if (startTime == null) return date;
+    final parts = startTime.toString().split(':');
+    if (parts.length < 2) return date;
+    final hour = int.tryParse(parts[0]);
+    final minute = int.tryParse(parts[1]);
+    if (hour == null || minute == null) return date;
+    return DateTime(date.year, date.month, date.day, hour, minute);
   }
 
   static Widget _buildCountdownPill(String value, String label) {

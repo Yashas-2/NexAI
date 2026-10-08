@@ -17,11 +17,32 @@ class Result(models.Model):
     subject = models.ForeignKey("scheduling.Subject", on_delete=models.CASCADE, related_name="results")
     exam_session = models.ForeignKey("scheduling.ExamSession", on_delete=models.CASCADE, related_name="results")
 
-    cie_marks = models.DecimalField(max_digits=5, decimal_places=2, default=0.00, help_text="Continuous Internal Evaluation Marks")
-    see_marks = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True, help_text="Semester End Examination Marks")
-    total_marks = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    cie_marks = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True, default=None,
+        help_text="Continuous Internal Evaluation Marks (null until real CIE data is available)",
+    )
+    see_marks = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="SEE RAW marks out of 100 (never overwritten by the /50 conversion)",
+    )
+    see_converted_marks = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="SEE scaled to /50: see_marks × 50 / 100 (computed in save())",
+    )
+    total_marks = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="Final marks out of 100: cie_marks + see_converted_marks",
+    )
     grade = models.CharField(max_length=6, choices=GradeChoices.choices, null=True, blank=True)
 
+    is_published = models.BooleanField(
+        default=False,
+        help_text="True only when the CoE has announced/published this result",
+    )
+    announced_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="When the CoE officially announced this result",
+    )
     published_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -29,8 +50,16 @@ class Result(models.Model):
         unique_together = [("student", "subject", "exam_session")]
 
     def save(self, *args, **kwargs):
-        if self.cie_marks is not None and self.see_marks is not None:
-            self.total_marks = float(self.cie_marks) + float(self.see_marks)
+        # SEE is examined out of 100 but contributes 50 marks to the final
+        # total: converted = raw × 50/100. The raw value is never modified.
+        raw_see = float(self.see_marks) if self.see_marks is not None else None
+        if raw_see is not None:
+            self.see_converted_marks = round(raw_see * 50 / 100, 2)
+        else:
+            self.see_converted_marks = None
+
+        if self.cie_marks is not None and self.see_converted_marks is not None:
+            self.total_marks = float(self.cie_marks) + float(self.see_converted_marks)
             if self.total_marks >= 90:
                 self.grade = self.GradeChoices.S
             elif self.total_marks >= 80:
@@ -70,10 +99,22 @@ class SEEAttempt(models.Model):
         on_delete=models.SET_NULL, null=True, blank=True,
         help_text="The session key used to unlock this attempt"
     )
+    evaluation_bundle = models.ForeignKey(
+        "evaluation.EvaluationBundle",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="see_attempts",
+        help_text="Bundle this answer booklet was filed under by the Main Evaluator",
+    )
     
     started_at = models.DateTimeField(auto_now_add=True)
     submitted_at = models.DateTimeField(null=True, blank=True)
     is_locked = models.BooleanField(default=False)
+    proctor_strikes = models.PositiveSmallIntegerField(
+        default=0,
+        help_text="Proctoring violations recorded during the attempt (max 3)",
+    )
 
     class Meta:
         db_table = "student_see_attempt"
@@ -91,6 +132,12 @@ class SEEAnswer(models.Model):
     attempt = models.ForeignKey(SEEAttempt, on_delete=models.CASCADE, related_name="answers")
     question = models.ForeignKey("vault.Question", on_delete=models.PROTECT, related_name="see_answers")
     answer_text = models.TextField(blank=True)
+    answer_image_base64 = models.TextField(
+        blank=True, help_text="Base64 encoded images of the handwritten pages"
+    )
+    extracted_text = models.TextField(
+        blank=True, help_text="Text extracted from the handwritten image via OCR"
+    )
     marks_awarded = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
 
     class Meta:

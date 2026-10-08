@@ -19,6 +19,21 @@ from .services import compute_cie_aggregate, compute_eligibility_from_cie
 from users.constants import UserRole
 
 
+def _cie_answer_key(ans):
+    """Storage key for a CIE answer row.
+
+    Sub-questions (Q1(a), Q1(b), …) must never overwrite each other, so when
+    the client sends a part marker the key includes the question number and
+    part. Draft auto-save and final submit both use this key.
+    """
+    text = ans.get('question_text') or ''
+    part = str(ans.get('part') or '').strip().strip('()')
+    qnum = ans.get('question_number')
+    if part and qnum not in (None, ''):
+        return f"Q{qnum}({part}) {text}".strip()[:500]
+    return text
+
+
 # ─── CIE Configuration (HOD Creates / Views) ──────────────────────────────────
 
 class CIEConfigListCreateView(generics.ListCreateAPIView):
@@ -546,7 +561,7 @@ class CIETestViewSet(viewsets.ModelViewSet):
         for ans in answers_data:
             CIEAnswer.objects.update_or_create(
                 attempt=attempt,
-                question_text=ans.get('question_text', ''),
+                question_text=_cie_answer_key(ans),
                 defaults={
                     "answer_text": ans.get('answer_text', ''),
                     "answer_image_base64": ans.get('answer_image_base64', ''),
@@ -557,6 +572,10 @@ class CIETestViewSet(viewsets.ModelViewSet):
         attempt.is_locked = True
         attempt.submitted_at = timezone.now()
         attempt.submission_status = CIEAttempt.SubmissionStatus.SUBMITTED if has_content else CIEAttempt.SubmissionStatus.NOT_ATTENDED
+        try:
+            attempt.proctor_strikes = max(0, min(3, int(request.data.get('strike_count') or 0)))
+        except (TypeError, ValueError):
+            attempt.proctor_strikes = 0
         attempt.save()
         
         import hashlib
@@ -566,7 +585,62 @@ class CIETestViewSet(viewsets.ModelViewSet):
             "status": "Exam submitted successfully",
             "receipt_hash": "0x" + receipt_hash,
             "submission_status": attempt.submission_status,
+            "proctor_strikes": attempt.proctor_strikes,
+            "integrity_score": round((3 - attempt.proctor_strikes) / 3 * 100),
         })
+
+    @action(detail=False, methods=['post'], url_path='kiosk_save_answer')
+    def kiosk_save_answer(self, request):
+        """
+        POST /cie/test/kiosk_save_answer/
+        Auto-save draft answers during the CIE kiosk exam. Never locks the
+        attempt and never re-runs OCR — the final kiosk_submit does that.
+        Answers are keyed per question/sub-question so sub-answers never
+        overwrite each other.
+        Body: {subject_code, answers: [{question_number, part, question_text,
+               answer_text, answer_image_base64}]}
+        """
+        user = request.user
+        if user.role != UserRole.STUDENT:
+            return Response({"error": "Only students can save answers via kiosk."}, status=403)
+
+        subject_code = request.data.get('subject_code')
+        if not subject_code:
+            return Response({"error": "subject_code is required."}, status=400)
+
+        from scheduling.models import Subject
+        try:
+            subject = Subject.objects.get(code=subject_code)
+            config = CIEConfiguration.objects.get(subject=subject, is_active=True)
+        except Subject.DoesNotExist:
+            return Response({"error": "Subject not found."}, status=404)
+        except CIEConfiguration.DoesNotExist:
+            return Response({"error": "No active CIE config found for this subject."}, status=404)
+        except CIEConfiguration.MultipleObjectsReturned:
+            config = CIEConfiguration.objects.filter(subject=subject, is_active=True).first()
+
+        attempt, _created = CIEAttempt.objects.get_or_create(
+            student=user.student_profile,
+            cie_config=config,
+        )
+        if attempt.is_locked:
+            return Response({"error": "Exam Already Submitted."}, status=status.HTTP_400_BAD_REQUEST)
+
+        saved = 0
+        for ans in request.data.get('answers', []):
+            defaults = {"answer_text": ans.get('answer_text', '')}
+            image = (ans.get('answer_image_base64') or '').strip()
+            if image:
+                # Only overwrite the stored script image when one is provided.
+                defaults["answer_image_base64"] = image
+            CIEAnswer.objects.update_or_create(
+                attempt=attempt,
+                question_text=_cie_answer_key(ans),
+                defaults=defaults,
+            )
+            saved += 1
+
+        return Response({"status": "saved", "saved": saved})
 
     # ── Faculty Actions ──────────────────────────────────────────────────────
 

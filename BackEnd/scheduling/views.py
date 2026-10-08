@@ -1,11 +1,15 @@
 """NexAI Scheduling – API Views"""
+import re
+
 from celery.result import AsyncResult
 from rest_framework import generics, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
 
 from core.permissions import IsChiefSuperintendent, IsStaff, IsChiefSuperintendentOrHOD
 from .models import Subject, Room, ExamSession, TimetableSlot, InvigilationDuty, StudentSubjectEnrollment
+from .models import archive_slots, ACTIVE_SLOT_STATUSES
 from .serializers import (
     SubjectSerializer,
     RoomSerializer,
@@ -299,16 +303,31 @@ class TimetableSlotListView(generics.ListAPIView):
     ordering_fields = ["exam_date", "start_time"]
 
     def get_queryset(self):
-        return TimetableSlot.objects.select_related(
+        qs = TimetableSlot.objects.select_related(
             "subject", "room", "exam_session"
         ).all()
+        # Archived (rescheduled) slots are audit history — hidden by default
+        if self.request.query_params.get("include_archived") != "true":
+            qs = qs.exclude(status=TimetableSlot.SlotStatus.RESCHEDULED)
+        return qs
 
 
-class TimetableSlotDetailView(generics.RetrieveDestroyAPIView):
-    """GET/DELETE individual timetable slot. Used for allocation lock/delete."""
+class TimetableSlotDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """GET/PATCH/DELETE individual timetable slot.
+
+    DELETE archives the slot (status -> RESCHEDULED + audit log) instead of
+    destroying it, so reschedule history is preserved for audit.
+    """
     serializer_class = TimetableSlotSerializer
     permission_classes = [IsChiefSuperintendentOrHOD]
     queryset = TimetableSlot.objects.all()
+
+    def perform_destroy(self, instance):
+        archive_slots(
+            TimetableSlot.objects.filter(pk=instance.pk),
+            reason=self.request.query_params.get("reason", "Slot deleted"),
+            user=self.request.user,
+        )
 
 
 @api_view(["POST"])
@@ -395,11 +414,15 @@ def trigger_timetable_generation(request):
         total_allocated = 0
 
         with transaction.atomic():
-            # Clear old CIE slots for this session
-            TimetableSlot.objects.filter(
-                exam_session=session,
-                status=TimetableSlot.SlotStatus.SCHEDULED,
-            ).delete()
+            # Archive old CIE slots for this session (kept for audit, hidden from students)
+            archive_slots(
+                TimetableSlot.objects.filter(
+                    exam_session=session,
+                    status=TimetableSlot.SlotStatus.SCHEDULED,
+                ),
+                reason="CIE schedule regenerated",
+                user=request.user if request.user.is_authenticated else None,
+            )
 
             from users.models import User
             from scheduling.models import InvigilationDuty, InvigilatorSessionKey
@@ -578,6 +601,233 @@ def trigger_timetable_generation(request):
         }, status=status.HTTP_202_ACCEPTED)
     # ── End CIE Fast-Path ──────────────────────────────────────────────────
 
+    # ── SEE Fast-Path ──────────────────────────────────────────────────────
+    # SEE sessions don't use the OR-Tools solver either (it deadlocks on
+    # Python 3.13). Allocate eligible students for each enrolled subject
+    # across the session window: up to `exams_per_day` papers per day,
+    # with rooms, seat maps, invigilation duties and session keys.
+    if session.session_type == ExamSession.SessionType.SEE or (
+        'SEE' in session.name.upper() and session.session_type != ExamSession.SessionType.CIE
+    ):
+        import uuid as _uuid
+        from datetime import time as _time, timedelta as _td
+        from django.db import transaction
+        from django.db.models import Q as _Q
+        from django.utils.timezone import localdate
+        from eligibility.models import StudentEligibility
+        from users.models import User
+        from .models import InvigilationDuty as _Duty, InvigilatorSessionKey as _Key
+        from .models import Room as _Room
+        # NOTE: bind locally — other branches import these names into the
+        # enclosing function scope, so an unimported name is unbound here.
+        from .models import StudentSubjectEnrollment  # noqa: F811
+
+        dept_codes = session.departments or []
+        rooms_filter = _Q(department__isnull=True)
+        if dept_codes:
+            rooms_filter = _Q(department__code__in=dept_codes) | _Q(department__isnull=True)
+        rooms_qs = _Room.objects.filter(is_active=True).filter(rooms_filter)
+        if session.selected_rooms:
+            rooms_qs = rooms_qs.filter(name__in=session.selected_rooms)
+        rooms = list(rooms_qs.order_by('-exam_capacity'))
+        if not rooms:
+            return Response(
+                {"error": "No active rooms found for this session's departments. Create rooms first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Subjects students are enrolled in for this session
+        enrolled_subject_ids = set(
+            StudentSubjectEnrollment.objects.filter(exam_session=session)
+            .values_list('subject_id', flat=True)
+        )
+        subjects = list(
+            Subject.objects.filter(id__in=enrolled_subject_ids, is_active=True).order_by('code')
+        )
+        if not subjects:
+            return Response(
+                {"error": "No enrolled subjects found for this session. Enroll students first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        def _students_for(subj):
+            """Latest eligible students across sessions (eligibility usually
+            lives on the CIE session), falling back to session enrollments."""
+            latest = {}
+            for e in (
+                StudentEligibility.objects.filter(subject=subj, is_eligible=True)
+                .order_by('-updated_at', '-created_at')
+                .select_related('student')
+            ):
+                if e.student_id not in latest:
+                    latest[e.student_id] = e.student
+            if latest:
+                return list(latest.values())
+            seen = {}
+            for e in (
+                StudentSubjectEnrollment.objects.filter(exam_session=session, subject=subj)
+                .select_related('student')
+            ):
+                seen[e.student_id] = e.student
+            return list(seen.values())
+
+        # Build the list of exam days (never schedule in the past)
+        today = localdate()
+        window_start = session.start_date or today
+        if window_start < today:
+            window_start = today
+        exam_dates = []
+        d = window_start
+        while d <= (session.end_date or window_start):
+            exam_dates.append(d)
+            d += _td(days=1)
+        if not exam_dates:
+            return Response(
+                {"error": "Session window has no future days left. Extend end_date on the session."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        per_day = max(1, min(2, session.exams_per_day or 1))
+        day_starts = [_time(9, 0), _time(14, 0)][:per_day]
+
+        invigilators = list(
+            User.objects.filter(role__in=["INVIGILATOR", "HOD", "EVALUATOR"]).order_by('?')
+        )
+
+        def _session_key():
+            return f"SEE-{_uuid.uuid4().hex[:4].upper()}-{_uuid.uuid4().hex[:4].upper()}"
+
+        seat_data = []
+        total_allocated = 0
+        slots_to_create = []
+        duties_to_create = []
+        keys_to_create = []
+        used = set()  # (room_id, date, start_time) -> booked
+
+        with transaction.atomic():
+            archive_slots(
+                TimetableSlot.objects.filter(
+                    exam_session=session,
+                    status__in=list(ACTIVE_SLOT_STATUSES),
+                ),
+                reason="SEE schedule regenerated",
+                user=request.user if request.user.is_authenticated else None,
+            )
+
+            for i, subj in enumerate(subjects):
+                day_idx = i // per_day
+                start_time = day_starts[i % per_day]
+                exam_date = exam_dates[day_idx % len(exam_dates)]
+                duration = getattr(subj, 'exam_duration_mins', None) or 180
+                from datetime import datetime as _dt
+                end_time = (_dt.combine(_dt.today(), start_time) + _td(minutes=duration)).time()
+
+                students_to_allocate = _students_for(subj)
+                if not students_to_allocate:
+                    continue
+
+                # Chunk students into rooms free at (room, date, start_time)
+                student_idx = 0
+                room_scan = 0
+                while student_idx < len(students_to_allocate):
+                    room = None
+                    for _ in range(len(rooms)):
+                        candidate = rooms[room_scan % len(rooms)]
+                        room_scan += 1
+                        if (candidate.id, exam_date, start_time) not in used:
+                            room = candidate
+                            break
+                    if not room:
+                        return Response(
+                            {"error": f"No free room for {subj.code} on {exam_date} at {start_time}. "
+                                      f"Add more rooms or reduce exams_per_day."},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+
+                    chunk = students_to_allocate[student_idx : student_idx + room.exam_capacity]
+                    student_idx += room.exam_capacity
+
+                    seat_map = {}
+                    for j, student in enumerate(chunk):
+                        seat_map[student.usn] = f"R{(j // 6) + 1}-S{(j % 6) + 1}"
+
+                    used.add((room.id, exam_date, start_time))
+
+                    slot = TimetableSlot(
+                        id=_uuid.uuid4(),
+                        exam_session=session,
+                        subject=subj,
+                        room=room,
+                        exam_date=exam_date,
+                        start_time=start_time,
+                        end_time=end_time,
+                        status=TimetableSlot.SlotStatus.SCHEDULED,
+                        seat_map=seat_map,
+                        solver_score=0,
+                    )
+                    slots_to_create.append(slot)
+
+                    if invigilators:
+                        inv = invigilators[sum(len(s.seat_map) for s in slots_to_create) % len(invigilators)]
+                        duty = _Duty(
+                            id=_uuid.uuid4(),
+                            timetable_slot=slot,
+                            invigilator=inv,
+                            duty_role=_Duty.DutyRole.CHIEF,
+                        )
+                        duties_to_create.append(duty)
+                        keys_to_create.append(
+                            _Key(
+                                id=_uuid.uuid4(),
+                                duty=duty,
+                                session_key=_session_key(),
+                                is_active=False,
+                            )
+                        )
+
+                    seat_data.append({
+                        "subject_code": subj.code,
+                        "subject_name": subj.name,
+                        "room_name": room.name,
+                        "room_capacity": room.exam_capacity,
+                        "seat_map": seat_map,
+                        "exam_date": exam_date.isoformat(),
+                        "start_time": start_time.isoformat(),
+                        "end_time": end_time.isoformat(),
+                    })
+                    total_allocated += len(seat_map)
+
+            if slots_to_create:
+                TimetableSlot.objects.bulk_create(slots_to_create)
+            if duties_to_create:
+                _Duty.objects.bulk_create(duties_to_create, ignore_conflicts=True)
+            if keys_to_create:
+                _Key.objects.bulk_create(keys_to_create, ignore_conflicts=True)
+
+        if total_allocated == 0:
+            return Response(
+                {"error": "No students found to allocate for this SEE session. "
+                          "Ensure students are enrolled (and eligible) first."},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
+        return Response({
+            "success": True,
+            "task_id": f"see-{_uuid.uuid4().hex[:8]}",
+            "sync": True,
+            "ready": True,
+            "message": f"SEE schedule for '{session.name}' – {total_allocated} seats across {len(seat_data)} subjects.",
+            "result": {
+                "success": True,
+                "slots_created": len(seat_data),
+                "solver_status": "SEE_FAST_PATH",
+                "wall_time_secs": 0,
+                "objective_value": total_allocated,
+            },
+            "seat_data": seat_data,
+        }, status=status.HTTP_202_ACCEPTED)
+    # ── End SEE Fast-Path ──────────────────────────────────────────────────
+
     try:
         schedule_input = build_schedule_input_from_orm(exam_session_id)
 
@@ -608,10 +858,14 @@ def trigger_timetable_generation(request):
 
         from django.db import transaction
         with transaction.atomic():
-            TimetableSlot.objects.filter(
-                exam_session_id=exam_session_id,
-                status=TimetableSlot.SlotStatus.SCHEDULED,
-            ).delete()
+            archive_slots(
+                TimetableSlot.objects.filter(
+                    exam_session_id=exam_session_id,
+                    status=TimetableSlot.SlotStatus.SCHEDULED,
+                ),
+                reason="Timetable regenerated by solver",
+                user=request.user if request.user.is_authenticated else None,
+            )
 
             slots_to_create = [
                 TimetableSlot(
@@ -822,11 +1076,91 @@ def timetable_task_status(request, task_id: str):
 
 class InvigilationDutyListCreateView(generics.ListCreateAPIView):
     serializer_class = InvigilationDutySerializer
-    permission_classes = [IsChiefSuperintendent]
-    queryset = InvigilationDuty.objects.select_related(
-        "invigilator", "timetable_slot__subject", "timetable_slot__room"
-    )
+    permission_classes = [IsAuthenticated]
     filterset_fields = ["timetable_slot", "timetable_slot__exam_session", "invigilator", "duty_role"]
+
+    def get_queryset(self):
+        qs = InvigilationDuty.objects.select_related(
+            "invigilator", "timetable_slot__subject", "timetable_slot__room"
+        )
+        if self.request.query_params.get('include_archived') != 'true':
+            qs = qs.exclude(timetable_slot__status=TimetableSlot.SlotStatus.RESCHEDULED)
+        if self.request.query_params.get('my_duties') == 'true':
+            qs = qs.filter(invigilator=self.request.user)
+        return qs
+
+
+def _eligible_students_for(subject, session):
+    """Latest eligible students for a subject (eligibility records often live
+    on a different session, e.g. CIE), falling back to session enrollments."""
+    from eligibility.models import StudentEligibility
+    latest = {}
+    for e in (
+        StudentEligibility.objects.filter(subject=subject, is_eligible=True)
+        .order_by('-updated_at', '-created_at')
+        .select_related('student')
+    ):
+        if e.student_id not in latest:
+            latest[e.student_id] = e.student
+    if latest:
+        return list(latest.values())
+    seen = {}
+    for e in StudentSubjectEnrollment.objects.filter(
+        exam_session=session, subject=subject
+    ).select_related('student'):
+        seen[e.student_id] = e.student
+    return list(seen.values())
+
+
+def _assign_seats_for_empty_slots(session, slot_ids=None):
+    """
+    Distribute a subject's eligible students across its active slots that have
+    no seat map (e.g. slots saved by the COE allocation wizard), filling rooms
+    in date/time/room order. Returns the number of slots seated.
+    """
+    import itertools
+    qs = TimetableSlot.objects.filter(
+        exam_session=session,
+        status__in=ACTIVE_SLOT_STATUSES,
+        seat_map={},
+    ).select_related('room', 'subject')
+    if slot_ids is not None:
+        qs = qs.filter(id__in=slot_ids)
+    qs = qs.order_by('subject_id', 'exam_date', 'start_time', '-room__exam_capacity', 'room__name')
+
+    seated = 0
+    for _subject_id, group in itertools.groupby(qs, key=lambda s: s.subject_id):
+        slots = list(group)
+        students = _eligible_students_for(slots[0].subject, session)
+        if not students:
+            continue
+        idx = 0
+        for slot in slots:
+            if idx >= len(students):
+                break
+            capacity = slot.room.exam_capacity or len(students)
+            chunk = students[idx : idx + capacity]
+            if not chunk:
+                break
+            idx += capacity
+            seat_map = {}
+            for j, student in enumerate(chunk):
+                seat_map[student.usn] = f"R{(j // 6) + 1}-S{(j % 6) + 1}"
+            slot.seat_map = seat_map
+            slot.save(update_fields=['seat_map'])
+            seated += 1
+    return seated
+
+
+def _parse_clock(value):
+    """Parse 'HH:MM[:SS]' (or a datetime.time) into datetime.time, else None."""
+    from datetime import time as _clock
+    if isinstance(value, _clock):
+        return value
+    try:
+        return _clock.fromisoformat(str(value))
+    except (ValueError, TypeError):
+        return None
 
 
 class AllocationSaveView(generics.GenericAPIView):
@@ -834,6 +1168,8 @@ class AllocationSaveView(generics.GenericAPIView):
     permission_classes = [IsChiefSuperintendentOrHOD]
 
     def post(self, request, *args, **kwargs):
+        from datetime import datetime, timedelta, date
+
         exam_session_id = request.data.get("exam_session_id")
         allocations = request.data.get("allocations", [])
 
@@ -846,8 +1182,45 @@ class AllocationSaveView(generics.GenericAPIView):
             return Response({"error": "Exam session not found."}, status=status.HTTP_404_NOT_FOUND)
 
         created_slots = 0
+        updated_slots = 0
         created_duties = 0
+        archived_slots = 0
+        touched_slot_ids = []
         errors = []
+        warnings = []
+
+        # ── Reschedule handling: archive (never delete) slots that are no
+        # longer part of the desired timetable; unchanged slots are reused.
+        desired_keys = set()
+        for alloc in allocations:
+            desired_keys.add((
+                alloc.get("subject_code"),
+                alloc.get("room_name"),
+                str(alloc.get("exam_date")),
+                str(alloc.get("start_time")),
+            ))
+
+        existing_slots = TimetableSlot.objects.filter(
+            exam_session=exam_session
+        ).select_related("subject", "room")
+
+        stale_slot_ids = []
+        for slot in existing_slots:
+            key = (
+                slot.subject.code,
+                slot.room.name,
+                slot.exam_date.isoformat(),
+                slot.start_time.isoformat(),
+            )
+            if key not in desired_keys:
+                stale_slot_ids.append(slot.id)
+
+        if stale_slot_ids:
+            archived_slots = archive_slots(
+                TimetableSlot.objects.filter(id__in=stale_slot_ids),
+                reason="Removed from allocation / rescheduled",
+                user=request.user,
+            )
 
         for alloc in allocations:
             subject_code = alloc.get("subject_code")
@@ -865,20 +1238,52 @@ class AllocationSaveView(generics.GenericAPIView):
                 errors.append(f"Subject {subject_code} or Room {room_name} not found: {str(e)}")
                 continue
 
-            # Create or get TimetableSlot
-            slot, created = TimetableSlot.objects.get_or_create(
+            # Guard: end must be after start — derive a sane duration when the
+            # wizard sends an inverted or missing end time.
+            start_t = _parse_clock(start_time)
+            end_t = _parse_clock(end_time)
+            if start_t and (end_t is None or end_t <= start_t):
+                duration = getattr(subject, 'exam_duration_mins', None) or 180
+                end_dt = datetime.combine(date(2000, 1, 1), start_t) + timedelta(minutes=duration)
+                end_time = end_dt.time().isoformat()
+                warnings.append(
+                    f"{subject_code}: end time was missing or before start — "
+                    f"set to {end_time} ({duration} min exam)."
+                )
+
+            # Reuse an existing active slot, or create it (archived slots are
+            # never revived — they are history).
+            slot = TimetableSlot.objects.filter(
                 exam_session=exam_session,
                 subject=subject,
                 room=room,
                 exam_date=exam_date,
                 start_time=start_time,
-                defaults={
-                    "end_time": end_time,
-                    "status": "CONFIRMED",
-                }
-            )
-            if created:
+                status__in=ACTIVE_SLOT_STATUSES,
+            ).first()
+            if slot:
+                touched_slot_ids.append(slot.id)
+                needs_save = (
+                    slot.status != TimetableSlot.SlotStatus.CONFIRMED
+                    or slot.end_time.strftime("%H:%M") != str(end_time)[:5]
+                )
+                if needs_save:
+                    slot.end_time = end_time
+                    slot.status = TimetableSlot.SlotStatus.CONFIRMED
+                    slot.save(update_fields=["end_time", "status"])
+                    updated_slots += 1
+            else:
+                slot = TimetableSlot.objects.create(
+                    exam_session=exam_session,
+                    subject=subject,
+                    room=room,
+                    exam_date=exam_date,
+                    start_time=start_time,
+                    end_time=end_time,
+                    status=TimetableSlot.SlotStatus.CONFIRMED,
+                )
                 created_slots += 1
+                touched_slot_ids.append(slot.id)
 
             # Create Chief InvigilationDuty
             if chief_email:
@@ -908,21 +1313,189 @@ class AllocationSaveView(generics.GenericAPIView):
                 except UserModel.DoesNotExist:
                     errors.append(f"Reliever invigilator {reliever_email} not found")
 
+        # Wizard allocations carry no seat data — seat the students now so
+        # the student app sees one room/seat per subject (not every hall).
+        seated_slots = _assign_seats_for_empty_slots(
+            exam_session, slot_ids=touched_slot_ids
+        )
+
         if not errors:
             exam_session.status = ExamSession.SessionStatus.SCHEDULED
             exam_session.save()
 
         return Response({
             "created_slots": created_slots,
+            "updated_slots": updated_slots,
+            "archived_slots": archived_slots,
             "created_duties": created_duties,
+            "seated_slots": seated_slots,
+            "warnings": warnings,
             "errors": errors,
-            "message": f"Saved {created_slots} timetable slots and {created_duties} invigilation duties.",
+            "message": (
+                f"Saved {created_slots} timetable slots ({updated_slots} updated, "
+                f"{archived_slots} archived) and {created_duties} invigilation duties "
+                f"({seated_slots} slots seated)."
+            ),
         }, status=status.HTTP_201_CREATED)
 
 
 from rest_framework.views import APIView
-from .models import InvigilatorSessionKey
+from .models import InvigilatorSessionKey, StudentExamAttendance, ExamIncidentReport
 from .serializers import InvigilatorSessionKeySerializer
+
+# Hall-ticket QR payload contract (see eligibility/tasks.py):
+#   qr_code_data = f"{student.usn}-{exam_session.id}"
+_QR_PAYLOAD_RE = re.compile(
+    r"^(?P<usn>[A-Za-z0-9]+)-"
+    r"(?P<session>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$"
+)
+# Invigilators may open/refresh the session this many minutes before start /
+# after end (early hall setup, overrun, testing) instead of only in-window.
+_SESSION_OPEN_GRACE_MINUTES = 120
+
+
+def _load_key_or_error(code):
+    """Resolve an active session key, or return an error Response."""
+    try:
+        key_obj = InvigilatorSessionKey.objects.select_related(
+            "duty__timetable_slot__subject",
+            "duty__timetable_slot__room",
+            "duty__timetable_slot__exam_session",
+            "duty__invigilator",
+        ).get(session_key=code)
+    except InvigilatorSessionKey.DoesNotExist:
+        return None, Response({"error": "Invalid session key."}, status=status.HTTP_404_NOT_FOUND)
+    if not key_obj.is_active:
+        return None, Response({"error": "This session key has been deactivated."}, status=status.HTTP_400_BAD_REQUEST)
+    return key_obj, None
+
+
+def _seat_usn_from_map(seat_map, usn):
+    """Canonical seat-map key for a (possibly lower-case) USN, else None."""
+    usn = (usn or "").strip()
+    if not usn:
+        return None
+    if usn in seat_map:
+        return usn
+    upper = usn.upper()
+    for key in seat_map:
+        if key.upper() == upper:
+            return key
+    return None
+
+
+def _seat_labels(seat_code):
+    """'R1-S2' -> ('R1-S2', 'Row 1, Seat 2'); passthrough otherwise."""
+    seat_code = str(seat_code or "")
+    m = re.match(r"^R(\d+)-S(\d+)$", seat_code)
+    if m:
+        return seat_code, f"Row {m.group(1)}, Seat {m.group(2)}"
+    return seat_code, seat_code
+
+
+def _initials(name):
+    parts = [p for p in (name or "").split() if p]
+    return "".join(p[0].upper() for p in parts[:2]) or "ST"
+
+
+def _attendance_for(slot, usns):
+    """usn -> StudentExamAttendance for the given slot (bulk)."""
+    if not usns:
+        return {}
+    return {
+        att.student.usn: att
+        for att in StudentExamAttendance.objects.filter(
+            timetable_slot=slot, student__usn__in=usns
+        ).select_related("student")
+    }
+
+
+def _build_session_payload(key_obj):
+    """
+    Full exam-session payload for the invigilator app: session header +
+    candidate roster (Name/USN/Subject/Seat/Room/Attendance) from the slot's
+    seat map + persisted attendance, + incident log + counters. Shared by the
+    Seating Blueprint and Candidate Roster tabs (single source of truth).
+    """
+    from django.utils import timezone
+
+    slot = key_obj.duty.timetable_slot
+    seat_map = slot.seat_map or {}
+
+    roster = {}
+    if seat_map:
+        from users.models import Student
+        roster = {s.usn: s for s in Student.objects.filter(
+            usn__in=seat_map.keys()
+        ).select_related("user")}
+    att_by_usn = _attendance_for(slot, seat_map.keys())
+
+    students = []
+    for usn, seat in seat_map.items():
+        student = roster.get(usn)
+        att = att_by_usn.get(usn)
+        name = student.full_name if student else usn
+        desk, pos = _seat_labels(seat)
+        students.append({
+            "deskId": desk,
+            "usn": usn,
+            "studentName": name,
+            "courseCode": slot.subject.code,
+            "seatPosition": pos,
+            "isQrVerified": bool(att and att.is_qr_verified),
+            "isBiometricMatched": bool(att and att.is_biometric_matched),
+            "status": att.status if att else StudentExamAttendance.AttendanceStatus.UNVERIFIED,
+            "bookletBarcode": att.booklet_barcode if att else None,
+            "dummyBarcode": att.dummy_barcode if att else None,
+            "avatarInitials": _initials(name),
+            "digitizedPagesCount": att.digitized_pages_count if att else 0,
+        })
+    students.sort(key=lambda s: s["deskId"])
+
+    incidents = []
+    for inc in slot.incidents.select_related("student").order_by("-timestamp"):
+        desk, _ = _seat_labels(seat_map.get(inc.student.usn, ""))
+        incidents.append({
+            "id": str(inc.id),
+            "deskId": desk,
+            "studentUsn": inc.student.usn,
+            "studentName": inc.student.full_name,
+            "infractionType": inc.infraction_type,
+            "description": inc.description,
+            "timestamp": timezone.localtime(inc.timestamp).strftime("%d %b %Y, %H:%M"),
+            "isBroadcastedToCoE": inc.is_broadcasted_to_coe,
+        })
+
+    def _count(status):
+        return sum(1 for s in students if s["status"] == status)
+
+    return {
+        "sessionId": str(slot.id),
+        "exam_session_id": str(slot.exam_session_id) if slot.exam_session_id else None,
+        "examSessionName": slot.exam_session.name if slot.exam_session else None,
+        "hallNumber": slot.room.name if slot.room else "TBA",
+        "courseCode": slot.subject.code,
+        "courseTitle": slot.subject.name,
+        "examDate": slot.exam_date.isoformat() if slot.exam_date else None,
+        "timeSlot": (
+            f"{slot.start_time.strftime('%H:%M') if slot.start_time else 'TBA'}"
+            f" - {slot.end_time.strftime('%H:%M') if slot.end_time else 'TBA'}"
+        ),
+        "chiefInvigilatorName": key_obj.duty.invigilator.full_name,
+        "dutyRole": key_obj.duty.duty_role,
+        "students": students,
+        "incidents": incidents,
+        "counts": {
+            "total": len(students),
+            "present": _count(StudentExamAttendance.AttendanceStatus.PRESENT),
+            "absent": _count(StudentExamAttendance.AttendanceStatus.ABSENT),
+            "malpractice": _count(StudentExamAttendance.AttendanceStatus.MALPRACTICE),
+            "unverified": _count(StudentExamAttendance.AttendanceStatus.UNVERIFIED),
+            "booklets": sum(1 for s in students if s["bookletBarcode"]),
+        },
+    }
+
 
 class InvigilatorSessionKeyView(APIView):
     """
@@ -978,103 +1551,352 @@ class InvigilatorSessionKeyView(APIView):
 class InvigilatorSessionKeyActivateView(APIView):
     """
     POST /scheduling/invigilator-keys/activate/
-    Activates an invigilation session using a 6-digit code.
-    Validates that the session key is within its valid time window.
+    Activates an invigilation session using a 6-digit code and returns the
+    full session payload: header, candidate roster (seat/attendance),
+    incident log and counters. Validates a grace window around the slot.
     """
     permission_classes = [IsStaff]
 
     def post(self, request):
+        from datetime import timedelta as _td
+
+        from django.utils import timezone
+
         code = request.data.get("session_code") or request.data.get("session_key")
         if not code:
             return Response({"error": "session_key is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            key_obj = InvigilatorSessionKey.objects.select_related(
-                'duty__timetable_slot'
-            ).get(session_key=code)
-        except InvigilatorSessionKey.DoesNotExist:
-            return Response({"error": "Invalid session key."}, status=status.HTTP_404_NOT_FOUND)
+        key_obj, error = _load_key_or_error(code)
+        if error is not None:
+            return error
 
-        if not key_obj.is_active:
-            return Response({"error": "This session key has been deactivated."}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Time validation: check if current time is within the exam slot window
-        from django.utils import timezone
-        now = timezone.now()
         slot = key_obj.duty.timetable_slot
+
+        # Time window with grace: open from N minutes before start until N
+        # minutes after end (early hall setup / overrun / testing).
+        now = timezone.now()
         if slot.exam_date and slot.start_time and slot.end_time:
-            from datetime import datetime as _dt, time as _time
+            from datetime import datetime as _dt
+
             slot_start = _dt.combine(slot.exam_date, slot.start_time)
             slot_end = _dt.combine(slot.exam_date, slot.end_time)
-            # Make timezone-aware if needed
+            
+            if slot_end < slot_start:
+                slot_end += _td(days=1)
+                
             if timezone.is_naive(slot_start):
                 slot_start = timezone.make_aware(slot_start)
             if timezone.is_naive(slot_end):
                 slot_end = timezone.make_aware(slot_end)
-            
-            if now < slot_start:
+            grace = _td(minutes=_SESSION_OPEN_GRACE_MINUTES)
+
+            if now < slot_start - grace:
                 return Response({
-                    "error": f"This exam session starts at {slot.start_time.strftime('%H:%M')}. Please wait.",
+                    "error": (
+                        f"This exam session starts at {slot.start_time.strftime('%H:%M')} "
+                        f"on {slot.exam_date.isoformat()}. The hall opens "
+                        f"{_SESSION_OPEN_GRACE_MINUTES} minutes before start."
+                    ),
                     "exam_date": slot.exam_date.isoformat(),
                     "start_time": slot.start_time.isoformat(),
                 }, status=status.HTTP_400_BAD_REQUEST)
-            if now > slot_end:
+            if now > slot_end + grace:
                 return Response({
                     "error": "This exam session has ended.",
                     "exam_date": slot.exam_date.isoformat(),
                     "end_time": slot.end_time.isoformat(),
                 }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Get assigned students for this slot
+        if key_obj.activated_at is None:
+            key_obj.activated_at = now
+            key_obj.save(update_fields=["activated_at"])
+
+        response_data = _build_session_payload(key_obj)
         seat_map = slot.seat_map or {}
-        assigned_students = list(seat_map.keys())
-
-        serializer = InvigilatorSessionKeySerializer(key_obj)
-        response_data = serializer.data
-        response_data['assigned_students'] = assigned_students
-        response_data['subject_code'] = slot.subject.code
-        response_data['subject_name'] = slot.subject.name
-        response_data['room_name'] = slot.room.name if slot.room else 'TBA'
-        response_data['exam_date'] = slot.exam_date.isoformat() if slot.exam_date else None
-        response_data['exam_time'] = f"{slot.start_time.strftime('%H:%M') if slot.start_time else 'TBA'} - {slot.end_time.strftime('%H:%M') if slot.end_time else 'TBA'}"
-        response_data['total_students'] = len(assigned_students)
-
+        response_data.update({
+            "assigned_students": list(seat_map.keys()),
+            "subject_code": slot.subject.code,
+            "subject_name": slot.subject.name,
+            "room_name": slot.room.name if slot.room else "TBA",
+            "exam_date": slot.exam_date.isoformat() if slot.exam_date else None,
+            "exam_time": (
+                f"{slot.start_time.strftime('%H:%M') if slot.start_time else 'TBA'}"
+                f" - {slot.end_time.strftime('%H:%M') if slot.end_time else 'TBA'}"
+            ),
+            "total_students": len(seat_map),
+        })
         return Response(response_data, status=status.HTTP_200_OK)
 
 
 class MarkAttendanceView(APIView):
     """
     POST /scheduling/invigilator/mark-attendance/
-    Marks a student as present using their USN and the active session key.
+    Marks attendance for a student in the session's hall.
+
+    Body: session_key, usn, optional qr_payload ("{usn}-{exam_session_id}"
+    hall-ticket contract), optional status (present|absent|malpractice).
+
+    Validates the QR payload against the session + hall ticket, enforces the
+    seat allocation, and is duplicate-safe (re-scan reports already_marked).
     """
     permission_classes = [IsStaff]
 
     def post(self, request):
+        from users.models import Student
+
         code = request.data.get("session_key")
-        usn = request.data.get("usn")
+        usn = (request.data.get("usn") or "").strip()
+        qr_payload = (request.data.get("qr_payload") or "").strip()
+        status_val = (request.data.get("status") or "present").strip().lower()
 
         if not code or not usn:
             return Response({"error": "session_key and usn are required."}, status=status.HTTP_400_BAD_REQUEST)
+        if status_val not in ("present", "absent", "malpractice"):
+            return Response({"error": "status must be present, absent or malpractice."}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            key_obj = InvigilatorSessionKey.objects.select_related('duty__timetable_slot').get(session_key=code)
-        except InvigilatorSessionKey.DoesNotExist:
-            return Response({"error": "Invalid session key."}, status=status.HTTP_404_NOT_FOUND)
-
-        if not key_obj.is_active:
-            return Response({"error": "This session key has been deactivated."}, status=status.HTTP_400_BAD_REQUEST)
+        key_obj, error = _load_key_or_error(code)
+        if error is not None:
+            return error
 
         slot = key_obj.duty.timetable_slot
         seat_map = slot.seat_map or {}
-        
-        if usn not in seat_map:
+
+        # ── Hall-ticket QR contract: {usn}-{exam_session_id} ──
+        if qr_payload:
+            m = _QR_PAYLOAD_RE.match(qr_payload)
+            if not m:
+                return Response({
+                    "error": "QR code is not a valid hall-ticket payload.",
+                    "qr_valid": False,
+                }, status=status.HTTP_400_BAD_REQUEST)
+            if m.group("usn").upper() != usn.upper():
+                return Response({
+                    "error": "QR code does not match this candidate's USN.",
+                    "qr_valid": False,
+                }, status=status.HTTP_400_BAD_REQUEST)
+            qr_session = m.group("session").lower()
+            if slot.exam_session_id and qr_session != str(slot.exam_session_id).lower():
+                return Response({
+                    "error": (
+                        "QR code belongs to a different exam session "
+                        f"({qr_session}); this hall is writing "
+                        f"{slot.exam_session_id}."
+                    ),
+                    "qr_valid": False,
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+        seat_usn = _seat_usn_from_map(seat_map, usn)
+        if seat_usn is None:
+            return Response({
+                "error": "Student is not assigned to this exam hall.",
+                "qr_valid": False,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if qr_payload:
+            from eligibility.models import HallTicket
+
+            ticket = HallTicket.objects.filter(
+                student__usn=seat_usn,
+                exam_session_id=slot.exam_session_id,
+                is_revoked=False,
+            ).first()
+            if ticket is None:
+                return Response({
+                    "error": "No valid (non-revoked) hall ticket for this exam session.",
+                    "qr_valid": False,
+                }, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            student = Student.objects.get(usn=seat_usn)
+        except Student.DoesNotExist:
+            return Response({"error": f"No student found with USN {seat_usn}."}, status=status.HTTP_404_NOT_FOUND)
+
+        seat = str(seat_map.get(seat_usn) or "")
+        desk, pos = _seat_labels(seat)
+
+        att, created = StudentExamAttendance.objects.get_or_create(
+            timetable_slot=slot,
+            student=student,
+            defaults={
+                "desk_id": desk[:20],
+                "seat_position": pos[:20],
+                "status": status_val,
+                "is_qr_verified": bool(qr_payload),
+                "is_biometric_matched": bool(request.data.get("is_biometric_matched", False)),
+            },
+        )
+
+        already_marked = False
+        if not created:
+            qr_now = att.is_qr_verified or bool(qr_payload)
+            unchanged = (
+                att.status == status_val
+                and qr_now == att.is_qr_verified
+                and att.desk_id == desk[:20]
+            )
+            if unchanged:
+                already_marked = True
+            else:
+                att.status = status_val
+                att.is_qr_verified = qr_now
+                att.desk_id = desk[:20]
+                att.seat_position = pos[:20]
+                att.save(update_fields=[
+                    "status", "is_qr_verified", "desk_id", "seat_position", "updated_at",
+                ])
+
+        return Response({
+            "message": (
+                f"Attendance already marked ({att.status.upper()})"
+                if already_marked
+                else "Attendance marked successfully"
+            ),
+            "usn": seat_usn,
+            "student_name": student.full_name,
+            "seat": desk,
+            "seat_position": pos,
+            "status": att.status.upper(),
+            "already_marked": already_marked,
+            "qr_valid": bool(qr_payload),
+        }, status=status.HTTP_200_OK)
+
+
+class InvigilatorIncidentView(APIView):
+    """
+    POST /scheduling/invigilator/incident/
+    Body: session_key, usn, infraction_type, description (optional).
+    Persists an ExamIncidentReport for the slot and flags the candidate's
+    attendance as malpractice.
+    """
+    permission_classes = [IsStaff]
+
+    def post(self, request):
+        from django.utils import timezone
+        from users.models import Student
+
+        code = request.data.get("session_key")
+        usn = (request.data.get("usn") or "").strip()
+        infraction_type = (request.data.get("infraction_type") or "").strip()
+        description = (request.data.get("description") or "").strip()
+
+        if not code or not usn or not infraction_type:
+            return Response(
+                {"error": "session_key, usn and infraction_type are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        key_obj, error = _load_key_or_error(code)
+        if error is not None:
+            return error
+
+        slot = key_obj.duty.timetable_slot
+        seat_map = slot.seat_map or {}
+        seat_usn = _seat_usn_from_map(seat_map, usn)
+        if seat_usn is None:
             return Response({"error": "Student is not assigned to this exam hall."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Basic implementation: We could save this in a new Attendance model
-        # For now, let's just return success since the exact model isn't specified
-        
+        try:
+            student = Student.objects.get(usn=seat_usn)
+        except Student.DoesNotExist:
+            return Response({"error": f"No student found with USN {seat_usn}."}, status=status.HTTP_404_NOT_FOUND)
+
+        desk, pos = _seat_labels(seat_map.get(seat_usn, ""))
+        incident = ExamIncidentReport.objects.create(
+            timetable_slot=slot,
+            student=student,
+            reported_by=request.user,
+            infraction_type=infraction_type,
+            description=description or f"Candidate flagged for {infraction_type}.",
+            is_broadcasted_to_coe=True,
+        )
+        StudentExamAttendance.objects.update_or_create(
+            timetable_slot=slot,
+            student=student,
+            defaults={
+                "desk_id": desk[:20],
+                "seat_position": pos[:20],
+                "status": StudentExamAttendance.AttendanceStatus.MALPRACTICE,
+            },
+        )
+
         return Response({
-            "message": "Attendance marked successfully",
-            "usn": usn,
-            "status": "PRESENT"
+            "id": str(incident.id),
+            "deskId": desk,
+            "studentUsn": seat_usn,
+            "studentName": student.full_name,
+            "infractionType": incident.infraction_type,
+            "description": incident.description,
+            "timestamp": timezone.localtime(incident.timestamp).strftime("%d %b %Y, %H:%M"),
+            "isBroadcastedToCoE": incident.is_broadcasted_to_coe,
+        }, status=status.HTTP_201_CREATED)
+
+
+class InvigilatorBookletView(APIView):
+    """
+    POST /scheduling/invigilator/booklet/
+    Body: session_key, usn, booklet_barcode, dummy_barcode (optional).
+    Tags the collected answer booklet onto the candidate's attendance record.
+    """
+    permission_classes = [IsStaff]
+
+    def post(self, request):
+        from users.models import Student
+
+        code = request.data.get("session_key")
+        usn = (request.data.get("usn") or "").strip()
+        barcode = (request.data.get("booklet_barcode") or "").strip()
+        dummy = (request.data.get("dummy_barcode") or "").strip()
+
+        if not code or not usn or not barcode:
+            return Response(
+                {"error": "session_key, usn and booklet_barcode are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        key_obj, error = _load_key_or_error(code)
+        if error is not None:
+            return error
+
+        slot = key_obj.duty.timetable_slot
+        seat_map = slot.seat_map or {}
+        seat_usn = _seat_usn_from_map(seat_map, usn)
+        if seat_usn is None:
+            return Response({"error": "Student is not assigned to this exam hall."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            student = Student.objects.get(usn=seat_usn)
+        except Student.DoesNotExist:
+            return Response({"error": f"No student found with USN {seat_usn}."}, status=status.HTTP_404_NOT_FOUND)
+
+        att = StudentExamAttendance.objects.filter(timetable_slot=slot, student=student).first()
+        if att is None:
+            return Response(
+                {"error": "Mark the candidate present before collecting a booklet."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if att.booklet_barcode and att.booklet_barcode != barcode:
+            return Response(
+                {
+                    "error": f"A booklet ({att.booklet_barcode}) is already tagged for this candidate.",
+                    "booklet": {
+                        "booklet_barcode": att.booklet_barcode,
+                        "dummy_barcode": att.dummy_barcode,
+                    },
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        already_tagged = att.booklet_barcode == barcode
+        if not already_tagged:
+            att.booklet_barcode = barcode
+            if dummy:
+                att.dummy_barcode = dummy
+            att.save(update_fields=["booklet_barcode", "dummy_barcode", "updated_at"])
+
+        return Response({
+            "usn": seat_usn,
+            "student_name": student.full_name,
+            "booklet_barcode": att.booklet_barcode,
+            "dummy_barcode": att.dummy_barcode,
+            "already_tagged": already_tagged,
         }, status=status.HTTP_200_OK)

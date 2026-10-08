@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../core/theme/app_theme.dart';
 import '../../models/scanning_models.dart';
 import '../dashboard/scanning_station_screen.dart';
+import '../../core/network/api_client.dart';
 
 class SessionKeyScreen extends StatefulWidget {
   const SessionKeyScreen({super.key});
@@ -22,7 +23,7 @@ class _SessionKeyScreenState extends State<SessionKeyScreen> {
     });
   }
 
-  void _connectSession() {
+  void _connectSession() async {
     final key = _keyController.text.trim();
     if (key.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -36,17 +37,19 @@ class _SessionKeyScreenState extends State<SessionKeyScreen> {
 
     setState(() => _isConnecting = true);
 
-    // Simulate token verification against backend / hub
-    Future.delayed(const Duration(milliseconds: 700), () {
+    try {
+      // Verify session key with backend
+      final sessionData = await ApiClient.verifySessionKey(key);
+
       if (!mounted) return;
       setState(() => _isConnecting = false);
 
       final session = ConnectedScanningSession(
-        sessionKey: key,
-        courseCode: key.contains('EC301') ? 'EC301' : 'CS201',
-        courseTitle: key.contains('EC301') ? 'Digital Signal Processing' : 'Data Structures & Algorithms',
-        hallNumber: key.contains('A101') ? 'Hall A-101' : 'Hall B-02',
-        expectedBooklets: key.contains('A101') ? 25 : 30,
+        sessionKey: sessionData['session_key'] ?? key,
+        courseCode: sessionData['course_code'] ?? (key.contains('EC301') ? 'EC301' : 'CS201'),
+        courseTitle: sessionData['course_title'] ?? (key.contains('EC301') ? 'Digital Signal Processing' : 'Data Structures & Algorithms'),
+        hallNumber: sessionData['hall_number'] ?? (key.contains('A101') ? 'Hall A-101' : 'Hall B-02'),
+        expectedBooklets: sessionData['expected_booklets'] ?? (key.contains('A101') ? 25 : 30),
         stationId: _selectedStation,
         staffName: _staffNameController.text.trim(),
       );
@@ -57,7 +60,16 @@ class _SessionKeyScreenState extends State<SessionKeyScreen> {
           builder: (context) => ScanningStationScreen(session: session),
         ),
       );
-    });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isConnecting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: AppTheme.accentRed,
+          content: Text('Connection failed: $e'),
+        ),
+      );
+    }
   }
 
   @override

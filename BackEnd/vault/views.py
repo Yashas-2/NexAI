@@ -1,4 +1,7 @@
 import json
+from datetime import datetime, timedelta
+
+from django.http import Http404
 from django.utils import timezone
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
@@ -9,6 +12,225 @@ from .models import QuestionPaper, Question
 from .serializers import QuestionPaperSerializer, PaperLockSerializer
 from .crypto import generate_aes_key, hash_key, encrypt_aes_key, encrypt_payload, decrypt_aes_key, decrypt_payload
 from .ipfs_service import upload_to_ipfs, fetch_from_ipfs
+
+
+# ---- question-paper release helpers ---------------------------------------
+
+_RELEASEABLE_STATUSES = (
+    QuestionPaper.PaperStatus.DRAFT,
+    QuestionPaper.PaperStatus.SUBMITTED,
+    QuestionPaper.PaperStatus.APPROVED,
+    QuestionPaper.PaperStatus.ENCRYPTED,
+    QuestionPaper.PaperStatus.DISTRIBUTED,
+)
+_SLOT_STATUSES = ('SCHEDULED', 'CONFIRMED', 'RESCHEDULED')
+_PAPER_EARLY_WINDOW = timedelta(minutes=2)
+_PAPER_ACCESS_WINDOW = timedelta(hours=48)
+
+
+def _lookup_release_target(pk):
+    """Resolve the release target by pk, bypassing the role-scoped queryset.
+
+    QuestionPaperViewSet.get_queryset() returns nothing for students, so
+    get_object() would 404 them; look the row up directly instead.
+    """
+    from django.core.exceptions import ValidationError
+    from cie.models import CIEQuestionPaperScrutiny
+
+    try:
+        paper = QuestionPaper.objects.filter(pk=pk).first()
+    except (ValueError, ValidationError, TypeError):
+        paper = None
+    if paper is not None:
+        return paper, False
+    try:
+        scrutiny = CIEQuestionPaperScrutiny.objects.filter(pk=pk).first()
+    except (ValueError, ValidationError, TypeError):
+        scrutiny = None
+    if scrutiny is not None:
+        return scrutiny, True
+    raise Http404('Question paper not found.')
+
+
+def _norm_part(part):
+    normalized = (part or '').strip().lower()
+    return normalized or None
+
+
+def _map_question_type(qtype):
+    mapped = (qtype or '').strip().upper()
+    if mapped == 'MCQ':
+        return 'MCQ'
+    if mapped in ('DRAW', 'DRAWING'):
+        return 'DRAW'
+    return 'THEORY'
+
+
+def _db_question_rows(paper):
+    return [
+        {
+            'section': q.section or '',
+            'question_number': q.question_number,
+            'part': q.part or '',
+            'text_content': q.text_content or '',
+            'question_type': q.question_type,
+            'marks': q.marks or 0,
+        }
+        for q in paper.questions.all().order_by('section', 'question_number', 'part')
+    ]
+
+
+def _payload_rows(payload):
+    if isinstance(payload, dict):
+        rows = payload.get('questions') or []
+    elif isinstance(payload, list):
+        rows = payload
+    else:
+        rows = []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _normalize_rows(rows):
+    """Group flat question rows into app-facing items with sub-questions.
+
+    Rows sharing (section, question_number) collapse into one item whose
+    subQuestions carry individual labels (Q1(a)), parts, text and marks.
+    Accepts DB snake_case rows as well as decrypted vault payload keys.
+    """
+    groups = {}
+    for row in rows:
+        section = row.get('section') or ''
+        number = row.get('question_number', row.get('questionNumber')) or 0
+        part = _norm_part(row.get('part'))
+        group = groups.setdefault(
+            (section, number),
+            {'section': section, 'question_number': number, 'subs': []},
+        )
+        group['subs'].append({
+            'label': f'Q{number}({part})' if part else f'Q{number}',
+            'part': part or '',
+            'questionNumber': number,
+            'questionText': row.get('text_content', row.get('questionText', '')) or '',
+            'marks': row.get('marks') or 0,
+            'type': _map_question_type(row.get('question_type', row.get('type'))),
+        })
+
+    items = []
+    for group in groups.values():
+        subs = group['subs']
+        if len(subs) == 1 and not subs[0]['part']:
+            solo = {k: v for k, v in subs[0].items() if k not in ('label', 'part')}
+            solo['section'] = group['section']
+            solo['subQuestions'] = []
+            items.append(solo)
+        else:
+            items.append({
+                'questionNumber': group['question_number'],
+                'section': group['section'],
+                'questionText': '\n'.join(sub['questionText'] for sub in subs),
+                'marks': sum(sub['marks'] for sub in subs),
+                'type': subs[0]['type'],
+                'subQuestions': subs,
+            })
+    return items
+
+
+def _student_entitled(student, exam_session, subject):
+    """Require a non-revoked hall ticket; a seat once seat maps exist."""
+    from eligibility.models import HallTicket
+    from scheduling.models import TimetableSlot
+
+    if student is None:
+        return False
+    has_ticket = HallTicket.objects.filter(
+        student=student, exam_session=exam_session, is_revoked=False,
+    ).exists()
+    if not has_ticket:
+        return False
+    seat_maps = [
+        slot.seat_map or {}
+        for slot in TimetableSlot.objects.filter(
+            exam_session=exam_session, subject=subject, status__in=_SLOT_STATUSES,
+        )
+    ]
+    if not any(seat_maps):
+        return True  # seating not yet allocated - the ticket alone is enough
+    usn = str(student.usn)
+    return any(usn in seat_map for seat_map in seat_maps)
+
+
+def _find_exam_slot(exam_session, subject):
+    """Slot that gates the paper release for this exam.
+
+    Active (SCHEDULED/CONFIRMED) slots always beat RESCHEDULED history so a
+    stale reschedule row can never move the exam window; RESCHEDULED is only
+    a fallback when no active slot exists. Today's slot first, then the next
+    upcoming one.
+    """
+    from scheduling.models import TimetableSlot
+
+    today = timezone.localdate()
+    active = ('SCHEDULED', 'CONFIRMED')
+    candidates = [
+        (active, {'exam_date': today}, ('-start_time',)),
+        (_SLOT_STATUSES, {'exam_date': today}, ('-start_time',)),
+        (active, {'exam_date__gte': today}, ('exam_date', '-start_time')),
+        (_SLOT_STATUSES, {'exam_date__gte': today}, ('exam_date', '-start_time')),
+    ]
+    for statuses, date_filter, ordering in candidates:
+        slot = TimetableSlot.objects.filter(
+            exam_session=exam_session,
+            subject=subject,
+            status__in=statuses,
+            **date_filter,
+        ).order_by(*ordering).first()
+        if slot is not None:
+            return slot
+    return None
+
+
+def _cie_release_content(raw, max_marks):
+    """Parse CIE paper content: JSON when possible, sectioned text otherwise."""
+    import re
+
+    try:
+        content = json.loads(raw or '')
+        if isinstance(content, dict):
+            return content
+        if isinstance(content, list):
+            return {"questions": content}
+    except (ValueError, TypeError):
+        pass
+
+    raw = raw or ''
+    questions = []
+    parts = re.split(r'(?:^|\n)\s*(Q?\s*\d+\s*[)\.])', raw)
+    idx = 1
+    q_num = 1
+    while idx < len(parts):
+        body = parts[idx + 1].strip() if idx + 1 < len(parts) else ''
+        idx += 2
+        marks_match = re.search(r'\[(\d+)M\]', body)
+        marks = int(marks_match.group(1)) if marks_match else 5
+        text = re.sub(r'\[(?:\d+M|CO\d+|L\d+)\]', '', body).strip().strip('\n').strip()
+        if text:
+            questions.append({
+                "questionNumber": q_num,
+                "questionText": text,
+                "marks": marks,
+                "type": "THEORY",
+            })
+            q_num += 1
+
+    if not questions:
+        questions = [{
+            "questionNumber": 1,
+            "questionText": raw,
+            "marks": max_marks,
+            "type": "THEORY",
+        }]
+    return {"questions": questions}
+
 
 class QuestionPaperViewSet(viewsets.ModelViewSet):
     queryset = QuestionPaper.objects.all()
@@ -214,188 +436,137 @@ class QuestionPaperViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated])
     def time_release(self, request, pk=None):
+        """Release the question paper inside the exam window.
+
+        Accessible from 2 minutes before the exam start until 48 hours after
+        it; when no slot is scheduled there is no window to enforce. Every
+        created paper is released to entitled students regardless of the order
+        in which the schedule and the paper were set up - only REJECTED papers
+        are refused.
         """
-        Allows a student to fetch the question paper exactly 2 minutes before the exam start time.
-        """
-        from django.http import Http404
-        from cie.models import CIEConfiguration, CIEQuestionPaperScrutiny
         try:
-            paper = self.get_object()
-            is_cie_scrutiny = False
-        except Http404:
-            # Fallback for CIE exams which use CIEQuestionPaperScrutiny instead of QuestionPaper
-            try:
-                scrutiny = CIEQuestionPaperScrutiny.objects.get(pk=pk)
-                paper = scrutiny
-                is_cie_scrutiny = True
-            except CIEQuestionPaperScrutiny.DoesNotExist:
-                raise Http404
+            import logging
+            logging.basicConfig(filename='E:\\NexAI\\BackEnd\\debug.log', level=logging.DEBUG)
+            logging.debug(f'time_release called with pk={pk}')
+        except Exception:
+            pass
 
-        # Ensure student is eligible for this exam session/subject
-        from scheduling.models import StudentSubjectEnrollment, TimetableSlot
-        from datetime import timedelta, datetime
-        import pytz
+        from cie.models import CIEConfiguration, CIEQuestionPaperScrutiny
+        from users.models import Student
 
-        is_cie = getattr(paper, 'exam_session', None) and 'CIE' in paper.exam_session.name.upper()
+        paper, is_scrutiny = _lookup_release_target(pk)
+        is_cie_session = bool(
+            getattr(paper, 'exam_session', None)
+            and 'CIE' in (paper.exam_session.name or '').upper()
+        )
 
-        if is_cie_scrutiny:
-            cie_config = paper.cie_config
-            if not cie_config.scheduled_date or not cie_config.scheduled_time:
+        # ---- resolve the exam start datetime -----------------------------
+        if is_scrutiny:
+            config = paper.cie_config
+            if not config.scheduled_date or not config.scheduled_time:
                 return Response({"error": "CIE Date/Time not set."}, status=status.HTTP_400_BAD_REQUEST)
-            
-            exam_start_dt = datetime.combine(cie_config.scheduled_date, cie_config.scheduled_time)
-            # Make it aware
-            exam_start_dt = timezone.make_aware(exam_start_dt)
-        elif is_cie:
-            cie_config = CIEConfiguration.objects.filter(exam_session=paper.exam_session, subject=paper.subject).first()
-            if not cie_config:
-                return Response({"error": "CIE Configuration not found."}, status=status.HTTP_404_NOT_FOUND)
-            if not cie_config.scheduled_date or not cie_config.scheduled_time:
-                return Response({"error": "CIE Date/Time not set."}, status=status.HTTP_400_BAD_REQUEST)
-            
-            exam_start_dt = datetime.combine(cie_config.scheduled_date, cie_config.scheduled_time)
-            # Make it aware
-            exam_start_dt = timezone.make_aware(exam_start_dt)
-        else:
-            from django.utils.timezone import localdate
-            from datetime import date as _date
-
-            today = localdate()
-
-            # Priority 1: slot on today's date (student is sitting today)
-            slot = TimetableSlot.objects.filter(
-                exam_session=paper.exam_session,
-                subject=paper.subject,
-                exam_date=today,
+            exam_start_dt = timezone.make_aware(
+                datetime.combine(config.scheduled_date, config.scheduled_time)
+            )
+        elif is_cie_session:
+            config = CIEConfiguration.objects.filter(
+                exam_session=paper.exam_session, subject=paper.subject,
             ).first()
-
-            # Priority 2: next upcoming slot (covers the case where the student
-            # checks early on a future day — they get that day's unlock window)
-            if not slot:
-                slot = TimetableSlot.objects.filter(
-                    exam_session=paper.exam_session,
-                    subject=paper.subject,
-                    exam_date__gte=today,
-                ).order_by('exam_date', 'start_time').first()
-
-            if not slot or not slot.start_time or not slot.exam_date:
-                return Response(
-                    {"error": "Timetable slot not found or not scheduled."},
-                    status=status.HTTP_404_NOT_FOUND,
+            if not config:
+                return Response({"error": "CIE Configuration not found."}, status=status.HTTP_404_NOT_FOUND)
+            if not config.scheduled_date or not config.scheduled_time:
+                return Response({"error": "CIE Date/Time not set."}, status=status.HTTP_400_BAD_REQUEST)
+            exam_start_dt = timezone.make_aware(
+                datetime.combine(config.scheduled_date, config.scheduled_time)
+            )
+        else:
+            # Active slots win over RESCHEDULED history; none -> no window.
+            slot = _find_exam_slot(paper.exam_session, paper.subject)
+            # No slot -> no window to enforce; an entitled student still gets
+            # the paper (creation order of schedule vs paper does not matter).
+            exam_start_dt = None
+            if slot and slot.start_time and slot.exam_date:
+                exam_start_dt = timezone.make_aware(
+                    datetime.combine(slot.exam_date, slot.start_time)
                 )
 
-            exam_start_dt = datetime.combine(slot.exam_date, slot.start_time)
-            exam_start_dt = timezone.make_aware(exam_start_dt)
+        # ---- entitlement: only the student's own exam paper ---------------
+        if not is_scrutiny and not is_cie_session:
+            student = Student.objects.filter(user=request.user).first()
+            if not _student_entitled(student, paper.exam_session, paper.subject):
+                return Response(
+                    {"error": "You are not eligible for this exam."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
-
-        now = timezone.now()
-        time_until_exam = exam_start_dt - now
-
-        if time_until_exam > timedelta(minutes=2):
-            return Response({
-                "error": "Too early to fetch paper.",
-                "remaining_seconds": int(time_until_exam.total_seconds() - 120)
-            }, status=status.HTTP_403_FORBIDDEN)
-
-        # Retrieve and decrypt
-        if is_cie_scrutiny:
+        # ---- approval gate: drafts are never released ---------------------
+        if is_scrutiny:
             if paper.status != CIEQuestionPaperScrutiny.ScrutinyStatus.APPROVED:
                 return Response({"error": "CIE paper not approved yet."}, status=status.HTTP_400_BAD_REQUEST)
-            
-            import json, re
-            try:
-                content = json.loads(paper.paper_content)
-            except Exception:
-                raw = paper.paper_content or ''
-                questions = []
-                # Split by Q1), Q2), 1), 2), 1., etc. (allowing leading spaces)
-                parts = re.split(r'(?:^|\n)\s*(Q?\s*\d+\s*[)\.])', raw)
-                # parts[0] is before Q1), then alternating marker/content
-                idx = 1
-                q_num = 1
-                while idx < len(parts):
-                    marker = parts[idx].strip()  # e.g. "Q1)" or "1)"
-                    body = parts[idx + 1].strip() if idx + 1 < len(parts) else ''
-                    idx += 2
+        elif paper.status not in _RELEASEABLE_STATUSES:
+            return Response(
+                {"error": "Question paper not approved yet."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
-                    # Extract marks from [10M]
-                    marks_match = re.search(r'\[(\d+)M\]', body)
-                    marks = int(marks_match.group(1)) if marks_match else 5
+        # ---- exam window: 2 min before start until 48 h after -------------
+        if exam_start_dt is not None:
+            time_until_exam = exam_start_dt - timezone.now()
+            if time_until_exam > _PAPER_EARLY_WINDOW:
+                return Response(
+                    {
+                        "error": "Too early to fetch paper.",
+                        "remaining_seconds": int(
+                            time_until_exam.total_seconds() - _PAPER_EARLY_WINDOW.total_seconds()
+                        ),
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            if time_until_exam < -_PAPER_ACCESS_WINDOW:
+                return Response(
+                    {"error": "Exam session has ended. Paper is no longer accessible."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
-                    # Extract CO from [CO1]
-                    co_match = re.search(r'\[CO\d+\]', body)
-
-                    # Extract Bloom's from [L3]
-                    bloom_match = re.search(r'\[L\d+\]', body)
-
-                    # Question text is everything after the metadata tags
-                    text = re.sub(r'\[(?:\d+M|CO\d+|L\d+)\]', '', body).strip()
-                    # Remove leading/trailing newlines
-                    text = text.strip('\n').strip()
-
-                    if text:
-                        questions.append({
-                            "questionNumber": q_num,
-                            "questionText": text,
-                            "marks": marks,
-                            "type": "THEORY"
-                        })
-                        q_num += 1
-
-                if not questions:
-                    # Ultimate fallback: single question with full content
-                    questions = [{
-                        "questionNumber": 1,
-                        "questionText": raw,
-                        "marks": paper.cie_config.max_marks,
-                        "type": "THEORY"
-                    }]
-
-                content = {"questions": questions}
-            
+        # ---- content ------------------------------------------------------
+        if is_scrutiny:
+            config = paper.cie_config
             return Response({
                 "status": "unlocked",
-                "duration_mins": paper.cie_config.duration_mins,
-                "content": content
+                "duration_mins": getattr(config, 'duration_mins', 180),
+                "total_marks": getattr(config, 'max_marks', 100),
+                "subject_code": config.subject.code if getattr(config, 'subject_id', None) else "",
+                "instructions": getattr(config, 'instructions', '') or '',
+                "exam_session_name": config.exam_session.name if getattr(config, 'exam_session_id', None) else "",
+                "content": _cie_release_content(
+                    paper.paper_content, getattr(config, 'max_marks', 100)
+                ),
             })
 
-        if paper.status not in [QuestionPaper.PaperStatus.ENCRYPTED, QuestionPaper.PaperStatus.DISTRIBUTED]:
-            # Mock mode: return empty questions if paper is not fully encrypted/vaulted yet
-            if paper.status in [QuestionPaper.PaperStatus.DRAFT, QuestionPaper.PaperStatus.APPROVED, QuestionPaper.PaperStatus.SUBMITTED, QuestionPaper.PaperStatus.SCRUTINIZED]:
-                questions_data = []
-                for q in paper.questions.all().order_by('question_number'):
-                    questions_data.append({
-                        "questionNumber": q.question_number,
-                        "questionText": q.text_content,
-                        "marks": q.marks,
-                        "type": q.question_type,
-                    })
-                
-                if not questions_data:
-                    questions_data = [
-                        {"questionNumber": 1, "questionText": "Draft Mode: Faculty has not added questions yet.", "marks": 0, "type": "THEORY"}
-                    ]
-
-                return Response({
-                    "status": "unlocked_draft",
-                    "content": {
-                        "questions": questions_data
-                    }
-                })
-            return Response({"error": "Paper is not in vault."}, status=status.HTTP_400_BAD_REQUEST)
-
-        aes_key = decrypt_aes_key(paper.encrypted_aes_key)
-        encrypted_payload = fetch_from_ipfs(paper.ipfs_cid)
-
-        try:
-            decrypted_payload = decrypt_payload(aes_key, encrypted_payload)
-            paper_content = json.loads(decrypted_payload.decode('utf-8'))
-        except Exception as e:
-            return Response({"error": "Failed to decrypt paper payload."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        rows = _db_question_rows(paper)
+        questions = _normalize_rows(rows) if rows else []
+        if not questions and paper.status in (
+            QuestionPaper.PaperStatus.ENCRYPTED,
+            QuestionPaper.PaperStatus.DISTRIBUTED,
+        ):
+            # Vault-only copy: decrypt the IPFS payload when DB rows are gone.
+            try:
+                aes_key = decrypt_aes_key(paper.encrypted_aes_key)
+                encrypted_payload = fetch_from_ipfs(paper.ipfs_cid)
+                decrypted_payload = decrypt_payload(aes_key, encrypted_payload)
+                payload = json.loads(decrypted_payload.decode('utf-8'))
+                questions = _normalize_rows(_payload_rows(payload))
+            except Exception:
+                questions = []
 
         return Response({
             "status": "unlocked",
-            "content": paper_content
+            "duration_mins": paper.duration_mins,
+            "total_marks": sum(item["marks"] for item in questions),
+            "subject_code": paper.subject.code if paper.subject_id else "",
+            "instructions": paper.instructions or "",
+            "exam_session_name": paper.exam_session.name if paper.exam_session_id else "",
+            "content": {"questions": questions},
         })
 
     @action(detail=False, methods=['get'], permission_classes=[])

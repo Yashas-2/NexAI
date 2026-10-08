@@ -297,9 +297,9 @@ export const StudentRosterMarksTab: React.FC<StudentRosterMarksTabProps> = ({
                               type="number"
                               min="0"
                               max="100"
-                              value={student.attendancePercent !== null && student.attendancePercent !== undefined ? student.attendancePercent : 100}
+                              value={student.attendancePercent !== null && student.attendancePercent !== undefined ? student.attendancePercent : ''}
                               onChange={e =>
-                                onStudentFieldChange(student.id, 'attendancePercent', e.target.value === '' ? 100 : parseInt(e.target.value))
+                                onStudentFieldChange(student.id, 'attendancePercent', e.target.value === '' ? '' : parseInt(e.target.value))
                               }
                               style={{...inputStyle, borderColor: isShortage ? '#FCA5A5' : '#CBD5E1'}}
                             />

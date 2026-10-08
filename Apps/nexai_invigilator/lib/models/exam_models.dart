@@ -83,26 +83,52 @@ class IncidentReportItem {
 
 class InvigilatorSession {
   final String sessionId;
+  final String? examSessionId;
+  final String? examSessionName;
   final String hallNumber; // e.g. "Exam Hall B-104"
   final String courseCode; // e.g. "CS201"
   final String courseTitle; // e.g. "Data Structures & Algorithms"
   final String examDate;
   final String timeSlot;
   final String chiefInvigilatorName;
+  final String dutyRole;
   final List<StudentDeskItem> students;
   final List<IncidentReportItem> incidents;
 
   InvigilatorSession({
     required this.sessionId,
+    this.examSessionId,
+    this.examSessionName,
     required this.hallNumber,
     required this.courseCode,
     required this.courseTitle,
     required this.examDate,
     required this.timeSlot,
     required this.chiefInvigilatorName,
+    this.dutyRole = '',
     required this.students,
     required this.incidents,
   });
+
+  InvigilatorSession copyWith({
+    List<StudentDeskItem>? students,
+    List<IncidentReportItem>? incidents,
+  }) {
+    return InvigilatorSession(
+      sessionId: sessionId,
+      examSessionId: examSessionId,
+      examSessionName: examSessionName,
+      hallNumber: hallNumber,
+      courseCode: courseCode,
+      courseTitle: courseTitle,
+      examDate: examDate,
+      timeSlot: timeSlot,
+      chiefInvigilatorName: chiefInvigilatorName,
+      dutyRole: dutyRole,
+      students: students ?? this.students,
+      incidents: incidents ?? this.incidents,
+    );
+  }
 
   int get totalCount => students.length;
   int get presentCount => students.where((s) => s.status == StudentAttendanceStatus.present).length;
@@ -110,4 +136,21 @@ class InvigilatorSession {
   int get malpracticeCount => students.where((s) => s.status == StudentAttendanceStatus.malpractice).length;
   int get unverifiedCount => students.where((s) => s.status == StudentAttendanceStatus.unverified).length;
   int get bookletsIngestedCount => students.where((s) => s.bookletBarcode != null).length;
+}
+
+/// Outcome of a backend attendance mark (real API response).
+class AttendanceResult {
+  final bool success;
+  final bool alreadyMarked;
+  final String status; // PRESENT / ABSENT / MALPRACTICE
+  final String seat;
+  final String message;
+
+  const AttendanceResult({
+    required this.success,
+    this.alreadyMarked = false,
+    this.status = '',
+    this.seat = '',
+    this.message = '',
+  });
 }

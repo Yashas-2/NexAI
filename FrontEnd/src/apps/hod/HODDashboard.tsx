@@ -61,7 +61,19 @@ export default function HODDashboard() {
   const [activeTab, setActiveTab] = useState<HODTab>('OVERVIEW');
   const [students, setStudents] = useState<StudentEligibilityRecord[]>(INITIAL_STUDENTS);
   const [hallTickets, setHallTickets] = useState<HallTicketRecord[]>(() => {
-    try { const saved = localStorage.getItem('nexai_hall_tickets'); return saved ? JSON.parse(saved) : INITIAL_HALL_TICKETS; } catch { return INITIAL_HALL_TICKETS; }
+    try {
+      const saved = localStorage.getItem('nexai_hall_tickets');
+      if (!saved) return INITIAL_HALL_TICKETS;
+      const parsed: HallTicketRecord[] = JSON.parse(saved) || [];
+      // Drop legacy placeholder (TBA) rows cached by older fetches — a fresh
+      // fetch replaces this list as soon as the dashboard mounts.
+      return parsed.map(t => ({
+        ...t,
+        slots: (t.slots || []).filter(s => s.examDate && s.examDate !== 'TBA'),
+      }));
+    } catch {
+      return INITIAL_HALL_TICKETS;
+    }
   });
   const [facultyNominations, setFacultyNominations] = useState<FacultyNomination[]>(INITIAL_FACULTY_NOMINATIONS);
   const [cieSheets, setCIESheets] = useState<CIEMarksSheet[]>(INITIAL_CIE_SHEETS);
@@ -120,6 +132,48 @@ export default function HODDashboard() {
         }));
         
         setStudents(mapped);
+      })
+      .catch(console.error);
+  };
+
+  const fetchHallTickets = () => {
+    api.get('/eligibility/hall-tickets/')
+      .then(res => {
+        const tickets = res.data.results || res.data;
+        if (tickets && tickets.length > 0) {
+          const mapped = tickets.map((t: any) => ({
+            id: t.id,
+            ticketNumber: t.ticket_number,
+            usn: t.usn,
+            studentName: t.student_name,
+            semester: typeof t.semester === 'number' || /^\d+$/.test(String(t.semester))
+              ? `${t.semester}th Semester`
+              : String(t.semester || ''),
+            department: t.department_code || 'CS',
+            examSession: t.exam_session_name,
+            examCycle: 'SEE_FINAL' as const,
+            generatedAt: t.created_at,
+            isRevoked: t.is_revoked,
+            qrPayload: t.qr_code_data,
+            slots: (t.slots || [])
+              // Only papers with a published schedule — no TBA placeholders
+              .filter((s: any) => s.exam_date || s.date)
+              .map((s: any) => ({
+                subjectCode: s.subject_code || '',
+                subjectTitle: s.subject_title || s.subject_name || '',
+                examDate: s.exam_date || s.date || '',
+                examTime: s.exam_time || '',
+                roomAllocated: s.room_allocated || s.room || '',
+                deskNumber: s.desk_number || s.seat || '',
+              })),
+          }));
+
+          setHallTickets(mapped);
+          try { localStorage.setItem('nexai_hall_tickets', JSON.stringify(mapped)); } catch (e) {}
+        } else {
+          setHallTickets([]);
+          try { localStorage.removeItem('nexai_hall_tickets'); } catch (e) {}
+        }
       })
       .catch(console.error);
   };
@@ -247,33 +301,7 @@ export default function HODDashboard() {
     fetchEligibilityRecords();
     document.addEventListener('visibilitychange', handleVisRefresh);
     // Fetch Hall Tickets from backend
-    api.get('/eligibility/hall-tickets/')
-      .then(res => {
-        const tickets = res.data.results || res.data;
-        if (tickets && tickets.length > 0) {
-          const mapped = tickets.map((t: any) => ({
-            id: t.id,
-            ticketNumber: t.ticket_number,
-            usn: t.usn,
-            studentName: t.student_name,
-            semester: t.semester,
-            department: t.department_code || 'CS',
-            examSession: t.exam_session_name,
-            examCycle: 'SEE_FINAL' as const,
-            generatedAt: t.created_at,
-            isRevoked: t.is_revoked,
-            qrPayload: t.qr_code_data,
-            slots: [],
-          }));
-          
-          setHallTickets(mapped);
-          try { localStorage.setItem('nexai_hall_tickets', JSON.stringify(mapped)); } catch (e) {}
-        } else {
-          setHallTickets([]);
-          try { localStorage.removeItem('nexai_hall_tickets'); } catch (e) {}
-        }
-      })
-      .catch(console.error);
+    fetchHallTickets();
 
     return () => {
       window.removeEventListener('nexai_cie_papers_updated', handleSync);
@@ -282,9 +310,19 @@ export default function HODDashboard() {
     };
 
     function handleVisRefresh() {
-      if (document.visibilityState === 'visible') fetchEligibilityRecords();
+      if (document.visibilityState === 'visible') {
+        fetchEligibilityRecords();
+        fetchHallTickets();
+      }
     }
   }, []);
+
+  // Refetch tickets each time the Hall Tickets tab opens so schedule
+  // changes (generation, reschedule, seating) show up immediately.
+  useEffect(() => {
+    if (activeTab === 'HALL_TICKETS') fetchHallTickets();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
 
 
 
@@ -555,6 +593,7 @@ export default function HODDashboard() {
               hallTickets={hallTickets}
               students={students}
               onUpdateHallTickets={handleUpdateHallTickets}
+              onRefreshTickets={fetchHallTickets}
             />
           )}
 

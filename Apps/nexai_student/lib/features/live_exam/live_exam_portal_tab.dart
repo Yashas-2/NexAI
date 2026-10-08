@@ -35,7 +35,7 @@ class _LiveExamPortalTabState extends State<LiveExamPortalTab> {
     super.dispose();
   }
 
-  Future<void> _fetchExams() async {
+Future<void> _fetchExams() async {
     try {
       final ticketsData = await ApiService.get('/student/portal/my_hall_tickets/');
       if (mounted) {
@@ -44,18 +44,68 @@ class _LiveExamPortalTabState extends State<LiveExamPortalTab> {
           for (final ticket in ticketsData) {
             final schedule = ticket['schedule'] ?? ticket['slots'] ?? [];
             for (final slot in schedule) {
+              // Only exams with a published schedule — no "TBA" placeholders.
+              final examDate = slot['exam_date'] ?? slot['date'];
+              if (examDate == null || '$examDate'.trim().isEmpty) continue;
+              final startTime = slot['start_time'];
+              final endTime = slot['end_time'];
+              final examTime = slot['exam_time'] ??
+                  (startTime != null && endTime != null ? '$startTime - $endTime' : '');
+              final eligible = slot['eligible'];
               loadedExams.add(ExamScheduleItem(
                 courseCode: slot['subject_code'] ?? '',
                 courseTitle: slot['subject_name'] ?? slot['subject_title'] ?? '',
-                examDate: slot['exam_date'] ?? slot['date'] ?? '',
-                timeSlot: slot['exam_time'] ?? '${slot['start_time'] ?? ''} - ${slot['end_time'] ?? ''}',
+                examDate: '$examDate',
+                timeSlot: examTime,
                 hallNumber: slot['room'] ?? slot['room_number'] ?? '',
                 deskNumber: slot['seat'] ?? slot['desk_number'] ?? '',
-                eligibilityStatus: 'ELIGIBLE',
+                eligibilityStatus: eligible == true
+                    ? 'ELIGIBLE'
+                    : (eligible == false ? 'NOT ELIGIBLE' : 'PENDING'),
                 qrPayload: slot['subject_code'] ?? '',
                 questionPaperId: slot['question_paper_id'],
                 slotId: slot['slot_id'],
+                sessionName: ticket['exam_session_name'],
+                isCie: slot['is_cie'] != false,
               ));
+            }
+          }
+          
+          // Fetch exam attempt status for each exam
+          for (var exam in loadedExams) {
+            if (exam.slotId != null) {
+              try {
+                final statusData = await ApiService.get('/student/portal/exam_attempt_status/?slot_id=${exam.slotId}');
+                if (mounted) {
+                  // Find the exam in the list and update its status
+                  final idx = loadedExams.indexWhere((e) => e.slotId == exam.slotId);
+                  if (idx != -1) {
+                    loadedExams[idx] = ExamScheduleItem(
+                      courseCode: exam.courseCode,
+                      courseTitle: exam.courseTitle,
+                      examDate: exam.examDate,
+                      timeSlot: exam.timeSlot,
+                      hallNumber: exam.hallNumber,
+                      deskNumber: exam.deskNumber,
+                      eligibilityStatus: exam.eligibilityStatus,
+                      qrPayload: exam.qrPayload,
+                      questionPaperId: exam.questionPaperId,
+                      slotId: exam.slotId,
+                      sessionName: exam.sessionName,
+                      isCie: exam.isCie,
+                      attemptCompleted: statusData['is_completed'] == true,
+                      attemptSubmittedAt: statusData['submitted_at'] != null 
+                          ? DateTime.tryParse(statusData['submitted_at']) : null,
+                      isLocked: statusData['is_locked'] == true,
+                      attemptId: statusData['attempt_id'],
+                      examEnded: statusData['exam_ended'] == true,
+                    );
+                  }
+                }
+              } catch (e) {
+                // If status check fails, keep original exam with default values
+                debugPrint('Failed to fetch exam status for ${exam.slotId}: $e');
+              }
             }
           }
           
@@ -77,6 +127,14 @@ class _LiveExamPortalTabState extends State<LiveExamPortalTab> {
             }
             return a.examDate.compareTo(b.examDate);
           });
+
+          // Drop exams that have already ended — the terminal only lists
+          // upcoming and currently-active exams.
+          final now = DateTime.now();
+          loadedExams.removeWhere((e) {
+            final end = _examEnd(e);
+            return end != null && now.isAfter(end);
+          });
         }
         setState(() {
           _exams = loadedExams;
@@ -89,6 +147,29 @@ class _LiveExamPortalTabState extends State<LiveExamPortalTab> {
           _isLoading = false;
         });
       }
+    }
+  }
+
+  /// End datetime of an exam, or null when the schedule is not published yet.
+  static DateTime? _examEnd(ExamScheduleItem exam) {
+    if (exam.examDate.isEmpty || exam.timeSlot.isEmpty) return null;
+    try {
+      final parts = exam.timeSlot.split('-');
+      if (parts.length != 2) return null;
+      final endParts = parts[1].trim().split(':');
+      if (endParts.length != 2) return null;
+      final date = DateTime.parse(exam.examDate);
+      var end = DateTime(date.year, date.month, date.day,
+          int.parse(endParts[0]), int.parse(endParts[1]));
+      final startParts = parts[0].trim().split(':');
+      if (startParts.length == 2) {
+        final start = DateTime(date.year, date.month, date.day,
+            int.parse(startParts[0]), int.parse(startParts[1]));
+        if (end.isBefore(start)) end = end.add(const Duration(days: 1));
+      }
+      return end;
+    } catch (_) {
+      return null;
     }
   }
 
@@ -133,17 +214,28 @@ class _LiveExamPortalTabState extends State<LiveExamPortalTab> {
     }
 
     final now = DateTime.now();
-    // ALL exams that are currently active (time window open) get the Start button
+    // Exams that are currently in their time window AND not completed/ended get the Start button
     List<ExamScheduleItem> activeExams = [];
     List<ExamScheduleItem> scheduledExams = [];
 
     for (var exam in _exams) {
-      if (_isExamActive(exam, now)) {
+      final isCompleted = exam.attemptCompleted || exam.isLocked;
+      final isEnded = exam.examEnded;
+      final isActive = _isExamActive(exam, now) && !exam.attemptCompleted && !exam.isLocked && !exam.examEnded;
+      
+      if (isActive) {
         activeExams.add(exam);
       } else {
         scheduledExams.add(exam);
       }
     }
+
+    final sessionNames = <String>{};
+    for (final e in _exams) {
+      final name = e.sessionName;
+      if (name != null && name.isNotEmpty) sessionNames.add(name);
+    }
+    final sessionLabel = sessionNames.isEmpty ? 'No session' : sessionNames.join(' • ');
 
     return Scaffold(
       backgroundColor: AppTheme.bgBase,
@@ -235,7 +327,7 @@ class _LiveExamPortalTabState extends State<LiveExamPortalTab> {
                   style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 14),
                 ),
                 Text(
-                  activeExams.isNotEmpty ? '${activeExams.length} LIVE' : 'Fall 2026',
+                  activeExams.isNotEmpty ? '${activeExams.length} LIVE' : sessionLabel,
                   style: TextStyle(
                     fontSize: 11,
                     color: activeExams.isNotEmpty ? AppTheme.accentGreen : AppTheme.textSecondary,
@@ -253,13 +345,22 @@ class _LiveExamPortalTabState extends State<LiveExamPortalTab> {
 
             // Remaining Upcoming Exams
             ...scheduledExams.map((exam) {
+              final isCompleted = exam.attemptCompleted || exam.isLocked;
+              final isEnded = exam.examEnded;
+              final canStart = exam.isButtonEnabled;
+              
+              Color borderColor = canStart ? AppTheme.cardBorder : AppTheme.textSecondary.withValues(alpha: 0.3);
+              Color badgeColor = canStart ? const Color(0xFFEFF6FF) : const Color(0xFFF1F5F9);
+              Color badgeTextColor = canStart ? AppTheme.accentBlue : AppTheme.textSecondary;
+              String badgeText = exam.statusText;
+
               return Container(
                 margin: const EdgeInsets.only(bottom: 12),
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
                   color: AppTheme.bgSurface,
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: AppTheme.cardBorder),
+                  border: Border.all(color: borderColor),
                 ),
                 child: Row(
                   children: [
@@ -267,10 +368,13 @@ class _LiveExamPortalTabState extends State<LiveExamPortalTab> {
                       width: 44,
                       height: 44,
                       decoration: BoxDecoration(
-                        color: AppTheme.bgBase,
+                        color: badgeColor,
                         borderRadius: BorderRadius.circular(12),
                       ),
-                      child: const Icon(Icons.lock_clock, color: AppTheme.textSecondary),
+                      child: Icon(
+                        canStart ? Icons.lock_clock : Icons.lock,
+                        color: badgeTextColor,
+                      ),
                     ),
                     const SizedBox(width: 14),
                     Expanded(
@@ -281,17 +385,24 @@ class _LiveExamPortalTabState extends State<LiveExamPortalTab> {
                           const SizedBox(height: 2),
                           Text('${exam.examDate} • ${exam.timeSlot}', style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
                           const SizedBox(height: 2),
-                          Text(exam.hallNumber, style: const TextStyle(color: AppTheme.accentBlue, fontSize: 11, fontWeight: FontWeight.w600)),
+                          Text(exam.hallNumber.isEmpty ? '—' : exam.hallNumber, style: const TextStyle(color: AppTheme.accentBlue, fontSize: 11, fontWeight: FontWeight.w600)),
                         ],
                       ),
                     ),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                       decoration: BoxDecoration(
-                        color: const Color(0xFFF1F5F9),
+                        color: badgeColor,
                         borderRadius: BorderRadius.circular(8),
                       ),
-                      child: const Text('SCHEDULED', style: TextStyle(color: AppTheme.textSecondary, fontWeight: FontWeight.w800, fontSize: 10)),
+                      child: Text(
+                        badgeText,
+                        style: TextStyle(
+                          color: badgeTextColor,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 10,
+                        ),
+                      ),
                     ),
                   ],
                 ),
@@ -305,20 +416,32 @@ class _LiveExamPortalTabState extends State<LiveExamPortalTab> {
   }
 
   Widget _buildActiveExamCard(ExamScheduleItem exam) {
+    // Determine card styling based on exam status
+    final isCompleted = exam.attemptCompleted || exam.isLocked;
+    final isEnded = exam.examEnded;
+    final canStart = exam.isButtonEnabled;
+    
+    Color borderColor = canStart ? AppTheme.primary : AppTheme.textSecondary.withValues(alpha: 0.5);
+    Color badgeColor = canStart ? const Color(0xFFDCFCE7) : const Color(0xFFF1F5F9);
+    Color badgeTextColor = canStart ? const Color(0xFF166534) : AppTheme.textSecondary;
+    IconData badgeIcon = canStart ? Icons.circle : Icons.lock;
+    String badgeText = exam.statusText;
+    Color badgeTextColor2 = canStart ? const Color(0xFF166534) : AppTheme.textSecondary;
+
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: AppTheme.bgSurface,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppTheme.primary, width: 1.8),
-        boxShadow: [
+        border: Border.all(color: borderColor, width: canStart ? 1.8 : 1),
+        boxShadow: canStart ? [
           BoxShadow(
             color: AppTheme.primary.withValues(alpha: 0.12),
             blurRadius: 16,
             offset: const Offset(0, 4),
           ),
-        ],
+        ] : [],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -329,18 +452,18 @@ class _LiveExamPortalTabState extends State<LiveExamPortalTab> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFDCFCE7),
+                  color: badgeColor,
                   borderRadius: BorderRadius.circular(8),
                 ),
-                child: const Row(
+                child: Row(
                   children: [
-                    Icon(Icons.circle, color: AppTheme.accentGreen, size: 8),
-                    SizedBox(width: 4),
-                    Text('LIVE NOW • READY TO START', style: TextStyle(color: Color(0xFF166534), fontWeight: FontWeight.w900, fontSize: 10)),
+                    Icon(badgeIcon, color: badgeTextColor, size: 8),
+                    const SizedBox(width: 4),
+                    Text(badgeText, style: TextStyle(color: badgeTextColor2, fontWeight: FontWeight.w900, fontSize: 10)),
                   ],
                 ),
               ),
-              Text(exam.deskNumber, style: const TextStyle(fontWeight: FontWeight.w900, color: AppTheme.primaryDark, fontSize: 12)),
+              Text(exam.deskNumber.isEmpty ? '—' : exam.deskNumber, style: const TextStyle(fontWeight: FontWeight.w900, color: AppTheme.primaryDark, fontSize: 12)),
             ],
           ),
           const SizedBox(height: 12),
@@ -350,7 +473,7 @@ class _LiveExamPortalTabState extends State<LiveExamPortalTab> {
           ),
           const SizedBox(height: 4),
           Text(
-            '${exam.hallNumber} • ${exam.timeSlot}',
+            '${exam.hallNumber.isEmpty ? '—' : exam.hallNumber} • ${exam.timeSlot}',
             style: const TextStyle(color: AppTheme.textSecondary, fontSize: 12),
           ),
           const SizedBox(height: 16),
@@ -362,16 +485,16 @@ class _LiveExamPortalTabState extends State<LiveExamPortalTab> {
             width: double.infinity,
             height: 48,
             child: ElevatedButton.icon(
-              onPressed: _isStartingExam ? null : () => _startExam(exam),
+              onPressed: canStart && !_isStartingExam ? () => _startExam(exam) : null,
               icon: _isStartingExam 
                   ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                   : const Icon(Icons.face, size: 18),
               label: Text(
-                _isStartingExam ? 'Checking Attendance...' : 'Verify Face & Enter Proctor Mode 🔒', 
+                _isStartingExam ? 'Checking Attendance...' : exam.buttonText, 
                 style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13)
               ),
               style: ElevatedButton.styleFrom(
-                backgroundColor: AppTheme.primary,
+                backgroundColor: canStart ? AppTheme.primary : AppTheme.textSecondary.withValues(alpha: 0.3),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
             ),

@@ -22,6 +22,17 @@ export const BatchGenerateModal: React.FC<BatchGenerateModalProps> = ({
   const [selectedSessionId, setSelectedSessionId] = useState<string>('NONE');
   const [isGenerating, setIsGenerating] = useState(false);
 
+  // Hall tickets are issued only for Semester End (SEE) sessions
+  const seeSessions = sessions.filter(s => /SEE|SEMESTER END/i.test(s.name || ''));
+  const sessionOptions = seeSessions.length > 0 ? seeSessions : sessions;
+
+  React.useEffect(() => {
+    if (selectedSessionId !== 'NONE') return;
+    const see = sessionOptions.find(s => /SEE|SEMESTER END/i.test(s.name || '')) || sessionOptions[0];
+    if (see) setSelectedSessionId(see.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessions]);
+
   // Group student eligibility records by USN and evaluate subject-by-subject eligibility
   const studentMap = new Map<string, { usn: string; name: string; semester: string; subjects: StudentEligibilityRecord[] }>();
 
@@ -51,10 +62,10 @@ export const BatchGenerateModal: React.FC<BatchGenerateModalProps> = ({
 
   studentMap.forEach(st => {
     const clearedSubs = st.subjects.filter(sub => {
-      const isAttCleared = sub.status === 'ELIGIBLE' || (sub.status === 'CONDONABLE' && sub.condonationApproved);
-      if (!isAttCleared) return false;
+      // Backend already applies the full gate (85% attendance, fee, 12/30 or 20/50 CIE)
+      const isCleared = sub.status === 'ELIGIBLE' || (sub.status === 'CONDONABLE' && sub.condonationApproved);
+      if (!isCleared) return false;
       if (sub.status === 'FEE_BLOCKED' || sub.hasFeeDues) return false;
-      if ((sub.cieMarksAvg ?? 0) < 20) return false;
       return true;
     });
 
@@ -83,9 +94,17 @@ export const BatchGenerateModal: React.FC<BatchGenerateModalProps> = ({
     
     try {
       const response = await api.post(`/eligibility/generate-hall-tickets/${selectedSessionId}/`);
-      
-      // Assume the backend triggers the task and we fetch updated tickets in the parent tab.
-      toast.success(response.data.message || 'Hall ticket generation task queued.');
+      const result = response.data.result || {};
+
+      if (result.status === 'error') {
+        toast.error(result.message || 'Failed to generate hall tickets.');
+        return;
+      }
+      if (result.generated_count > 0) {
+        toast.success(`${result.generated_count} hall ticket(s) generated.`);
+      } else {
+        toast.success(response.data.message || 'Hall tickets already exist for all eligible students.');
+      }
       
       // Since it's async queued or we need the actual tickets, we could either:
       // A: Wait for a webhook/poll
@@ -250,7 +269,7 @@ export const BatchGenerateModal: React.FC<BatchGenerateModalProps> = ({
                 style={{ width: '100%', padding: '10px 12px', borderRadius: '8px', border: '1.5px solid var(--color-border)', fontSize: '0.85rem', fontWeight: 600 }}
               >
                 <option value="NONE">-- Select Exam Session --</option>
-                {sessions.map(s => (
+                {sessionOptions.map(s => (
                   <option key={s.id} value={s.id}>{s.name}</option>
                 ))}
               </select>

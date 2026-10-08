@@ -200,7 +200,7 @@ export const UnsealedPaperView: React.FC<UnsealedPaperViewProps> = ({
                   {secQuestions.map(q => (
                     <div key={q.id} style={{ display: 'flex', justifyContent: 'space-between', gap: '20px', fontSize: '0.95rem', lineHeight: 1.6 }}>
                       <div style={{ display: 'flex', gap: '12px' }}>
-                        <span style={{ fontWeight: 800, minWidth: '24px' }}>{q.number}.</span>
+                        <span style={{ fontWeight: 800, minWidth: '24px' }}>{q.number}{q.part ? q.part : ''}.</span>
                         <span>{q.text}</span>
                       </div>
                       <div style={{ fontWeight: 800, fontFamily: 'sans-serif', whiteSpace: 'nowrap', fontSize: '0.85rem' }}>

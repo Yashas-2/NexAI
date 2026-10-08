@@ -3,6 +3,7 @@ import '../../core/theme/app_theme.dart';
 import '../../models/scanning_models.dart';
 import '../digitizer/rapid_booklet_digitizer_screen.dart';
 import '../auth/session_key_screen.dart';
+import '../../core/network/api_client.dart';
 
 class ScanningStationScreen extends StatefulWidget {
   final ConnectedScanningSession session;
@@ -70,6 +71,28 @@ class _ScanningStationScreenState extends State<ScanningStationScreen> {
     );
 
     if (result != null && mounted) {
+      // Submit to backend
+      try {
+        await ApiClient.submitBooklet(
+          sessionKey: widget.session.sessionKey,
+          physicalBarcode: result.physicalBarcode,
+          dummyBarcode: result.dummyBarcode,
+          pageCount: result.pageCount,
+          pageFilePaths: result.pageFilePaths,
+          ocrClarity: result.ocrClarity,
+          sha256Digest: result.sha256Digest,
+        );
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: AppTheme.accentRed,
+            content: Text('Failed to submit booklet: $e'),
+          ),
+        );
+        return;
+      }
+
       setState(() {
         _scannedBooklets.insert(0, result);
       });
@@ -105,14 +128,30 @@ class _ScanningStationScreenState extends State<ScanningStationScreen> {
             child: const Text('Cancel'),
           ),
           ElevatedButton(
-            onPressed: () {
+            onPressed: () async {
               Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  backgroundColor: AppTheme.primaryDark,
-                  content: Text('✓ Batch Dispatched & Signed with Station Private Key!'),
-                ),
-              );
+              try {
+                await ApiClient.reconcileBatch(
+                  sessionKey: widget.session.sessionKey,
+                  totalBooklets: _scannedBooklets.length,
+                  totalPages: _scannedBooklets.fold<int>(0, (sum, b) => sum + b.pageCount),
+                );
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    backgroundColor: AppTheme.primaryDark,
+                    content: Text('✓ Batch Dispatched & Signed with Station Private Key!'),
+                  ),
+                );
+              } catch (e) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    backgroundColor: AppTheme.accentRed,
+                    content: Text('Dispatch failed: $e'),
+                  ),
+                );
+              }
             },
             style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primary),
             child: const Text('Confirm & Dispatch Batch ✓'),

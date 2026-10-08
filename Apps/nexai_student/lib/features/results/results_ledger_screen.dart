@@ -40,45 +40,6 @@ class _ResultsLedgerScreenState extends State<ResultsLedgerScreen> {
     }
   }
 
-  void _applyRevaluation(dynamic item) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Apply for Re-evaluation (${item['subject_code'] ?? item['subject']})'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Course: ${item['subject_name'] ?? item['subject']}'),
-            const SizedBox(height: 8),
-            Text('Current Marks: ${item['total_marks'] ?? 'N/A'} (Grade: ${item['grade'] ?? 'N/A'})', style: const TextStyle(fontWeight: FontWeight.w700)),
-            const SizedBox(height: 12),
-            const Text('Official Re-evaluation & Photocopy Processing Fee: ₹500', style: TextStyle(fontSize: 12, color: AppTheme.textSecondary)),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  backgroundColor: AppTheme.primaryDark,
-                  content: Text('Re-evaluation application submitted for ${item['subject_code'] ?? item['subject']}'),
-                ),
-              );
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primary),
-            child: const Text('Pay ₹500 & Apply ✓'),
-          ),
-        ],
-      ),
-    );
-  }
-
   void _openScriptScans(dynamic item) {
     showModalBottomSheet(
       context: context,
@@ -117,15 +78,15 @@ class _ResultsLedgerScreenState extends State<ResultsLedgerScreen> {
             const Divider(height: 1),
 
             Expanded(
-              child: ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                  // Marks breakdown
-                  _buildMarkRow('CIE Marks', '${item['cie_marks'] ?? 0} / 50'),
-                  const SizedBox(height: 8),
-                  _buildMarkRow('SEE Marks', '${item['see_marks'] ?? '—'} / 100'),
-                  const SizedBox(height: 8),
-                  _buildMarkRow('Total Marks', '${item['total_marks'] ?? '—'} / 150'),
+                child: ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    // Marks breakdown
+                    _buildMarkRow('CIE Marks', item['cie_marks'] != null ? '${item['cie_marks']} / 50' : 'Not entered'),
+                    const SizedBox(height: 8),
+                    _buildMarkRow('SEE Marks', item['see_marks'] != null ? '${item['see_marks']} / 100' : 'Not evaluated'),
+                    const SizedBox(height: 8),
+                    _buildMarkRow('Total Marks', item['total_marks'] != null ? '${item['total_marks']} / 150' : 'Not available'),
                   const SizedBox(height: 12),
                   Container(
                     padding: const EdgeInsets.all(14),
@@ -180,6 +141,12 @@ class _ResultsLedgerScreenState extends State<ResultsLedgerScreen> {
     );
   }
 
+  String _fmtGpa(dynamic value) {
+    if (value == null) return '—';
+    final parsed = double.tryParse(value.toString());
+    return parsed != null ? parsed.toStringAsFixed(2) : '—';
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -216,7 +183,7 @@ class _ResultsLedgerScreenState extends State<ResultsLedgerScreen> {
                       children: [
                         const Text('CUMULATIVE CGPA', style: TextStyle(color: Colors.white60, fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 0.5)),
                         const SizedBox(height: 6),
-                        Text('${_profile?['cgpa'] ?? 'N/A'}', style: const TextStyle(color: Color(0xFF4ADE80), fontWeight: FontWeight.w900, fontSize: 26)),
+                        Text(_fmtGpa(_profile?['cgpa']), style: const TextStyle(color: Color(0xFF4ADE80), fontWeight: FontWeight.w900, fontSize: 26)),
                         const SizedBox(height: 4),
                         Text(_profile != null ? 'Semester ${_profile['semester'] ?? ''}' : 'No results yet', style: const TextStyle(color: Colors.white70, fontSize: 11)),
                       ],
@@ -237,7 +204,7 @@ class _ResultsLedgerScreenState extends State<ResultsLedgerScreen> {
                       children: [
                         const Text('LATEST SGPA', style: TextStyle(color: AppTheme.primaryDark, fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 0.5)),
                         const SizedBox(height: 6),
-                        Text('${_profile?['latestSgpa'] ?? 'N/A'}', style: const TextStyle(color: AppTheme.primaryDark, fontWeight: FontWeight.w900, fontSize: 26)),
+                        Text(_fmtGpa(_profile?['latest_sgpa']), style: const TextStyle(color: AppTheme.primaryDark, fontWeight: FontWeight.w900, fontSize: 26)),
                         const SizedBox(height: 4),
                         Text(_profile != null ? '${_profile['name'] ?? ''} — ${_profile['usn'] ?? ''}' : 'No results yet', style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
                       ],
@@ -280,7 +247,7 @@ class _ResultsLedgerScreenState extends State<ResultsLedgerScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text('${res['subject_code'] ?? res['subject']}: ${res['subject_name'] ?? ''}', style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 14)),
-                              Text('CIE: ${res['cie_marks'] ?? 0}/50 | SEE: ${res['see_marks'] ?? '—'}/100', style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
+                              Text('CIE: ${res['cie_marks'] ?? '—'}/50 | SEE: ${res['see_marks'] ?? '—'}/100', style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
                             ],
                           ),
                         ),
@@ -293,7 +260,7 @@ class _ResultsLedgerScreenState extends State<ResultsLedgerScreen> {
                           ),
                           child: Center(
                             child: Text(
-                              res['grade'] ?? '?',
+                              res['grade'] ?? '—',
                               style: TextStyle(
                                 fontSize: 22,
                                 fontWeight: FontWeight.w900,
@@ -312,7 +279,7 @@ class _ResultsLedgerScreenState extends State<ResultsLedgerScreen> {
                     Row(
                       children: [
                         Expanded(
-                          child: Text('${res['exam_session_name'] ?? ''} • ${res['credits'] ?? 4} Credits', style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+                          child: Text('${res['exam_session_name'] ?? ''} • ${res['credits'] ?? '—'} Credits', style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
                         ),
                         const SizedBox(width: 8),
                         Expanded(

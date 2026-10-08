@@ -12,7 +12,8 @@ class ResultSerializer(serializers.ModelSerializer):
         model = Result
         fields = [
             'id', 'subject', 'subject_code', 'subject_name', 'exam_session_name', 'credits',
-            'cie_marks', 'see_marks', 'total_marks', 'grade', 'published_at'
+            'cie_marks', 'see_marks', 'see_converted_marks', 'total_marks', 'grade',
+            'is_published', 'announced_at', 'published_at'
         ]
 
 from .models import SEEAttempt, SEEAnswer

@@ -25,7 +25,7 @@ class ProctoredExamKioskScreen extends StatefulWidget {
 
 class _ProctoredExamKioskScreenState extends State<ProctoredExamKioskScreen> with WidgetsBindingObserver {
   int _currentQuestionIndex = 0;
-  late List<ExamQuestionItem> _questions;
+  List<ExamQuestionItem> _questions = [];
   bool _isSubmitted = false;
   bool _isBlankSubmission = false;
   ResponseInputMode _inputMode = ResponseInputMode.digitalPen;
@@ -34,16 +34,42 @@ class _ProctoredExamKioskScreenState extends State<ProctoredExamKioskScreen> wit
   bool _isLoadingQuestions = true;
   String? _countdownMessage;
   Timer? _countdownTimer;
-  String _submissionReceiptHash = '0x7f9a2b84c01de23f990142aa';
+  String _submissionReceiptHash = '';
+  int? _serverIntegrityScore;
+
+  // ── Paper availability (empty state — never fabricated questions) ────────
+  /// Non-null when there is no paper to show; the UI renders the
+  /// "Question paper not available yet" empty state with this detail line.
+  String? _paperUnavailableDetail;
+  /// True when the failure is retryable (e.g. network), false for
+  /// not-yet-available / not-eligible states.
+  bool _paperLoadFailed = false;
+  String? _paperInstructions;
+
+  int get _integrityScore =>
+      _serverIntegrityScore ?? (((3 - _strikeCount) / 3 * 100).round().clamp(0, 100));
+
+  /// Sum of the real question marks — used when the API omits total_marks.
+  int get _totalMarks => _examTotalMarks ??
+      _questions.fold(0, (sum, q) => sum + q.maxMarks);
 
   // ── Exam Countdown Timer ──────────────────────────────────────────────────
   /// Remaining seconds for the exam. Initialised from the API response.
   int _examRemainingSeconds = 0;
-  int _examTotalMarks = 100;
-  int _examDurationMins = 180;
+  /// Duration/marks come exclusively from the question-paper API — there are
+  /// no hardcoded defaults; null means "not provided" and is shown as '—'.
+  int? _examDurationMins;
+  int? _examTotalMarks;
   Timer? _examTimer;
   /// Student USN shown in the AppBar.
   String _studentUsn = '';
+
+  // ── Answer auto-save ──────────────────────────────────────────────────────
+  Timer? _autoSaveTimer;
+  bool _autoSaveInFlight = false;
+  /// hashCode of each question's last successfully synced script image.
+  final Map<int, int> _syncedImageHashes = {};
+  DateTime? _lastAutoSaveAt;
 
   final TextEditingController _answerController = TextEditingController();
   final Map<int, GlobalKey<DigitalPaperCanvasState>> _canvasKeys = {};
@@ -95,75 +121,217 @@ class _ProctoredExamKioskScreenState extends State<ProctoredExamKioskScreen> wit
     return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
   }
 
+  /// Map backend question types onto the app's input-mode vocabulary.
+  static String _normalizeType(dynamic raw) {
+    final v = '${raw ?? ''}'.toUpperCase();
+    if (v == 'MCQ') return 'MCQ';
+    if (v == 'CODE') return 'CODE';
+    return 'THEORY';
+  }
+
+  static int? _tryInt(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    if (value is String) return int.tryParse(value);
+    return null;
+  }
+
+  /// Flatten the released paper into answering units.
+  ///
+  /// The backend groups sub-questions under their parent
+  /// (`{questionNumber: 1, subQuestions: [{part: 'a', …}, …]}`); every
+  /// sub-question becomes its own item with its own marks and answer area.
+  List<ExamQuestionItem> _parseQuestions(dynamic content) {
+    final rawList = ((content is Map ? content['questions'] : null) as List?) ?? [];
+    final items = <ExamQuestionItem>[];
+
+    for (final raw in rawList) {
+      if (raw is! Map) continue;
+      final qnum = _tryInt(raw['questionNumber']) ?? 0;
+      final section = raw['section']?.toString();
+      final type = _normalizeType(raw['type']);
+
+      final subs = (raw['subQuestions'] as List?) ?? [];
+      if (subs.isNotEmpty) {
+        for (final s in subs) {
+          if (s is! Map) continue;
+          final part = (s['part'] ?? '').toString();
+          items.add(ExamQuestionItem(
+            questionNumber: _tryInt(s['questionNumber']) ?? qnum,
+            part: part.isEmpty ? null : part,
+            section: section,
+            questionText: (s['questionText'] ?? '').toString(),
+            maxMarks: _tryInt(s['marks']) ?? 0,
+            type: _normalizeType(s['type'] ?? type),
+            options: (s['options'] as List?)?.map((e) => e.toString()).toList(),
+          ));
+        }
+      } else {
+        final part = (raw['part'] ?? '').toString();
+        items.add(ExamQuestionItem(
+          questionNumber: qnum,
+          part: part.isEmpty ? null : part,
+          section: section,
+          questionText: (raw['questionText'] ?? '').toString(),
+          maxMarks: _tryInt(raw['marks']) ?? 0,
+          type: type,
+          options: (raw['options'] as List?)?.map((e) => e.toString()).toList(),
+        ));
+      }
+    }
+    return items;
+  }
+
+  void _setPaperUnavailable({required String detail, bool retryable = false}) {
+    setState(() {
+      _questions = [];
+      _isLoadingQuestions = false;
+      _countdownTimer?.cancel();
+      _paperUnavailableDetail = detail;
+      _paperLoadFailed = retryable;
+    });
+  }
+
   Future<void> _fetchQuestions() async {
     if (widget.exam.questionPaperId == null) {
-      setState(() {
-        _questions = [
-          ExamQuestionItem(questionNumber: 1, questionText: 'No Question Paper linked to this exam.', maxMarks: 0, type: 'THEORY'),
-        ];
-        _isLoadingQuestions = false;
-        _updateAnswerController();
-      });
+      _setPaperUnavailable(
+        detail: 'No finalized question paper has been linked to this exam yet.',
+        retryable: true,
+      );
       return;
     }
 
     try {
       final response = await ApiService.get('/vault/question-papers/${widget.exam.questionPaperId}/time_release/');
-      
-      if (response['status'] == 'unlocked' || response['status'] == 'unlocked_draft') {
+
+      if (response['status'] == 'unlocked') {
         final content = response['content'];
-        final questionsList = (content['questions'] as List?)?.map((q) => ExamQuestionItem(
-          questionNumber: q['questionNumber'] ?? 0,
-          questionText: q['questionText'] ?? '',
-          maxMarks: q['marks'] ?? 0,
-          type: q['type'] ?? 'THEORY',
-          options: (q['options'] as List?)?.map((e) => e.toString()).toList(),
-        )).toList() ?? [];
+        final parsed = _parseQuestions(content);
+        if (parsed.isEmpty) {
+          _setPaperUnavailable(
+            detail: 'The released paper contains no questions yet.',
+          );
+          return;
+        }
+
+        final int? durationMins =
+            _tryInt(response['duration_mins']) ?? _tryInt(content is Map ? content['duration_mins'] : null);
+        final int? totalMarks =
+            _tryInt(response['total_marks']) ?? _tryInt(content is Map ? content['total_marks'] : null);
+        final instructions = response['instructions'];
 
         setState(() {
-          _questions = questionsList.isNotEmpty ? questionsList : [
-            ExamQuestionItem(questionNumber: 1, questionText: 'No questions found in payload.', maxMarks: 0, type: 'THEORY')
-          ];
+          _questions = parsed;
+          _currentQuestionIndex = 0;
           _isLoadingQuestions = false;
+          _paperUnavailableDetail = null;
+          _paperLoadFailed = false;
+          _paperInstructions =
+              (instructions is String && instructions.trim().isNotEmpty) ? instructions : null;
+          _examDurationMins = durationMins;
+          _examTotalMarks = totalMarks;
           _countdownTimer?.cancel();
           _updateAnswerController();
         });
 
-        // Start the exam countdown timer using duration from the vault response.
-        // Falls back to 60 minutes if not specified.
-        final int durationMins = response['duration_mins'] ?? content['duration_mins'] ?? 60;
-        final int totalMarks = response['total_marks'] ?? content['total_marks'] ?? 100;
-        
-        setState(() {
-          _examDurationMins = durationMins;
-          _examTotalMarks = totalMarks;
-        });
-        
-        _startExamTimer(durationMins);
+        _startAutoSave();
+        if (durationMins != null) _startExamTimer(durationMins);
+      } else {
+        _setPaperUnavailable(
+          detail: 'The question paper for this exam has not been released yet.',
+        );
       }
     } catch (e) {
       final errStr = e.toString();
-      if (errStr.contains('403')) {
-        // Extract remaining seconds if possible, else default to 120
+      if (errStr.contains('remaining_seconds')) {
+        // Unlocks shortly — show the countdown and retry when it elapses.
         final RegExp regex = RegExp(r'remaining_seconds.*?(\d+)');
         final match = regex.firstMatch(errStr);
         int remainingSeconds = match != null ? int.parse(match.group(1)!) : 120;
-        
+
         setState(() {
           _isLoadingQuestions = true;
           _countdownMessage = "Questions unlock in ${_formatDuration(remainingSeconds)}";
         });
-        
+
         _startCountdown(remainingSeconds);
+      } else if (errStr.contains('not approved') || errStr.contains('not been finalized')) {
+        _setPaperUnavailable(
+          detail: 'The question paper for this exam has not been finalized yet.',
+        );
+      } else if (errStr.contains('not eligible')) {
+        _setPaperUnavailable(
+          detail: 'You are not eligible to write this exam.',
+        );
       } else {
-        setState(() {
-          _questions = [
-            ExamQuestionItem(questionNumber: 1, questionText: 'Error fetching questions: $e', maxMarks: 0, type: 'THEORY'),
-          ];
-          _isLoadingQuestions = false;
-          _updateAnswerController();
-        });
+        _setPaperUnavailable(
+          detail: 'Error: $errStr',
+          retryable: true,
+        );
       }
+    }
+  }
+
+  // ── Answer auto-save ──────────────────────────────────────────────────────
+  void _startAutoSave() {
+    _autoSaveTimer?.cancel();
+    _autoSaveTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (!_isSubmitted && _questions.isNotEmpty) {
+        _saveCurrentAnswer();
+        _syncDraftToServer();
+      }
+    });
+  }
+
+  /// Build the answers payload for the draft auto-save endpoint.
+  /// Script images are included only when they changed since the last
+  /// successful sync (tracked by hash) to avoid re-uploading unchanged pages.
+  List<Map<String, dynamic>> _buildDraftAnswers() {
+    final answers = <Map<String, dynamic>>[];
+    for (var i = 0; i < _questions.length; i++) {
+      final q = _questions[i];
+      final image = q.answerImageBase64 ?? '';
+      final imageDirty = image.isNotEmpty && _syncedImageHashes[i] != image.hashCode;
+      final hasText = (q.candidateAnswer ?? '').trim().isNotEmpty;
+      if (!hasText && image.isEmpty && !q.isAnswered) continue;
+
+      answers.add({
+        "question_number": q.questionNumber,
+        "part": q.part ?? '',
+        "question_text": q.questionText,
+        "answer_text": q.candidateAnswer ?? "",
+        if (imageDirty) "answer_image_base64": image,
+      });
+    }
+    return answers;
+  }
+
+  Future<void> _syncDraftToServer() async {
+    if (_isSubmitted || _questions.isEmpty || _autoSaveInFlight) return;
+    final answers = _buildDraftAnswers();
+    if (answers.isEmpty) return;
+
+    _autoSaveInFlight = true;
+    try {
+      final savePath = widget.exam.isCie
+          ? '/cie/test/kiosk_save_answer/'
+          : '/student/portal/see_save_answer/';
+      await ApiService.post(savePath, {
+        "subject_code": widget.exam.courseCode,
+        "answers": answers,
+      });
+
+      // Mark every non-empty image as synced.
+      for (var i = 0; i < _questions.length; i++) {
+        final image = _questions[i].answerImageBase64 ?? '';
+        if (image.isNotEmpty) _syncedImageHashes[i] = image.hashCode;
+      }
+      if (mounted) setState(() => _lastAutoSaveAt = DateTime.now());
+    } catch (e) {
+      // Silent — the next tick retries; final submit re-sends everything.
+      debugPrint('Draft auto-save failed: $e');
+    } finally {
+      _autoSaveInFlight = false;
     }
   }
 
@@ -294,6 +462,8 @@ class _ProctoredExamKioskScreenState extends State<ProctoredExamKioskScreen> wit
     WidgetsBinding.instance.removeObserver(this);
     _countdownTimer?.cancel();
     _examTimer?.cancel();
+    _autoSaveTimer?.cancel();
+    _answerController.dispose();
     // Restore normal system navigation and unpin screen
     _disableKioskMode();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
@@ -301,6 +471,7 @@ class _ProctoredExamKioskScreenState extends State<ProctoredExamKioskScreen> wit
   }
 
   void _updateAnswerController() {
+    if (_questions.isEmpty) return;
     _answerController.text = _questions[_currentQuestionIndex].candidateAnswer ?? '';
     if (_questions[_currentQuestionIndex].type == 'MCQ') {
       _inputMode = ResponseInputMode.mcq;
@@ -350,8 +521,11 @@ class _ProctoredExamKioskScreenState extends State<ProctoredExamKioskScreen> wit
       builder: (context) => FullQuestionPaperModal(
         questions: _questions,
         exam: widget.exam,
-        totalMarks: _examTotalMarks,
+        totalMarks: _totalMarks,
         durationMins: _examDurationMins,
+        instructions: _paperInstructions,
+        usn: _studentUsn,
+        sessionName: widget.exam.sessionName,
         onSelectQuestion: (idx) {
           setState(() {
             _currentQuestionIndex = idx;
@@ -405,19 +579,28 @@ class _ProctoredExamKioskScreenState extends State<ProctoredExamKioskScreen> wit
               
               try {
                 final answers = _questions.map((q) => {
+                  "question_number": q.questionNumber,
+                  "part": q.part ?? "",
                   "question_text": q.questionText,
                   "answer_text": q.candidateAnswer ?? "",
                   "answer_image_base64": q.answerImageBase64 ?? "",
                 }).toList();
-                
-                final response = await ApiService.post('/cie/test/kiosk_submit/', {
+
+                // CIE submits to the CIE endpoint; SEE has its own attempt store.
+                final submitPath = widget.exam.isCie
+                    ? '/cie/test/kiosk_submit/'
+                    : '/student/portal/see_submit/';
+                final response = await ApiService.post(submitPath, {
                   "subject_code": widget.exam.courseCode,
                   "answers": answers,
+                  "strike_count": _strikeCount,
                 });
                 
                 if (response['receipt_hash'] != null && mounted) {
                   setState(() {
                     _submissionReceiptHash = response['receipt_hash'];
+                    final score = response['integrity_score'];
+                    if (score is num) _serverIntegrityScore = score.toInt();
                   });
                 }
                 
@@ -497,6 +680,10 @@ class _ProctoredExamKioskScreenState extends State<ProctoredExamKioskScreen> wit
       );
     }
 
+    if (_paperUnavailableDetail != null) return _buildPaperUnavailable();
+    // Defensive: never index an empty question list (RangeError guard).
+    if (!_isSubmitted && _questions.isEmpty) return _buildPaperUnavailable();
+
     // Intercept back button to prevent accidental exit
     return PopScope(
       canPop: _isSubmitted,
@@ -567,6 +754,25 @@ class _ProctoredExamKioskScreenState extends State<ProctoredExamKioskScreen> wit
 
             const SizedBox(width: 8),
 
+            // Last auto-save indicator
+            if (_lastAutoSaveAt != null)
+              Container(
+                margin: const EdgeInsets.only(right: 8, top: 8, bottom: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: AppTheme.bgDark,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  'Saved ${_lastAutoSaveAt!.hour.toString().padLeft(2, '0')}:${_lastAutoSaveAt!.minute.toString().padLeft(2, '0')}',
+                  style: const TextStyle(
+                    color: AppTheme.accentGreen,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 10,
+                  ),
+                ),
+              ),
+
             // Live Countdown Timer
             Container(
               margin: const EdgeInsets.only(right: 12, top: 8, bottom: 8),
@@ -591,7 +797,9 @@ class _ProctoredExamKioskScreenState extends State<ProctoredExamKioskScreen> wit
                   ),
                   const SizedBox(width: 4),
                   Text(
-                    _examRemainingSeconds > 0 ? _formatExamTime() : 'Time Up!',
+                    _examDurationMins == null
+                        ? '--:--'
+                        : (_examRemainingSeconds > 0 ? _formatExamTime() : 'Time Up!'),
                     style: TextStyle(
                       color: _examRemainingSeconds > 0 && _examRemainingSeconds <= 300
                           ? AppTheme.accentRed
@@ -606,6 +814,61 @@ class _ProctoredExamKioskScreenState extends State<ProctoredExamKioskScreen> wit
           ],
         ),
         body: _isSubmitted ? _buildSubmissionReceipt() : _buildExamWorkspace(q: _questions[_currentQuestionIndex]),
+      ),
+    );
+  }
+
+  /// Empty state shown when there is no paper to answer — never fabricated.
+  Widget _buildPaperUnavailable() {
+    return Scaffold(
+      backgroundColor: AppTheme.bgBase,
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.error_outline, color: AppTheme.accentRed, size: 64),
+              const SizedBox(height: 24),
+              const Text(
+                'Question paper not available yet',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w900),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                _paperUnavailableDetail ??
+                    'The question paper for this exam has not been loaded yet.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white70, fontSize: 16),
+              ),
+              const SizedBox(height: 32),
+              if (_paperLoadFailed)
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Retry'),
+                  style: ElevatedButton.styleFrom(backgroundColor: AppTheme.primary),
+                  onPressed: () {
+                    setState(() {
+                      _isLoadingQuestions = true;
+                      _paperUnavailableDetail = null;
+                    });
+                    _fetchQuestions();
+                  },
+                ),
+              const SizedBox(height: 16),
+              TextButton.icon(
+                icon: const Icon(Icons.arrow_back),
+                label: const Text('Back'),
+                style: TextButton.styleFrom(foregroundColor: Colors.white54),
+                onPressed: () {
+                  _disableKioskMode();
+                  Navigator.of(context).pop();
+                },
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -693,9 +956,21 @@ class _ProctoredExamKioskScreenState extends State<ProctoredExamKioskScreen> wit
                 children: [
                   const Text('DIGITAL SUBMISSION RECEIPT HASH:', style: TextStyle(fontSize: 10, color: AppTheme.textSecondary, fontWeight: FontWeight.w800)),
                   const SizedBox(height: 4),
-                  Text(_submissionReceiptHash, style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.w800, color: AppTheme.accentBlue)),
+                  Text(
+                    _submissionReceiptHash.isNotEmpty ? _submissionReceiptHash : 'Unavailable',
+                    style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.w800, color: AppTheme.accentBlue),
+                  ),
                   const SizedBox(height: 8),
-                  Text('PROCTOR INTEGRITY SCORE: 100% (Strikes: $_strikeCount/3)', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: AppTheme.accentGreen)),
+                  Text(
+                    'PROCTOR INTEGRITY SCORE: $_integrityScore% (Strikes: $_strikeCount/3)',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                      color: _integrityScore >= 100
+                          ? AppTheme.accentGreen
+                          : (_integrityScore >= 60 ? AppTheme.accentAmber : AppTheme.accentRed),
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -771,7 +1046,7 @@ class _ProctoredExamKioskScreenState extends State<ProctoredExamKioskScreen> wit
                             },
                             borderRadius: BorderRadius.circular(8),
                             child: Container(
-                              width: 38,
+                              width: 44,
                               decoration: BoxDecoration(
                                 color: isCurrent ? AppTheme.primary : (isAnswered ? AppTheme.accentGreen.withValues(alpha: 0.15) : AppTheme.bgBase),
                                 border: Border.all(
@@ -782,7 +1057,7 @@ class _ProctoredExamKioskScreenState extends State<ProctoredExamKioskScreen> wit
                               ),
                               alignment: Alignment.center,
                               child: Text(
-                                'Q${i + 1}',
+                                _questions[i].tabLabel,
                                 style: TextStyle(
                                   fontWeight: FontWeight.w800,
                                   fontSize: 12,
@@ -843,7 +1118,7 @@ class _ProctoredExamKioskScreenState extends State<ProctoredExamKioskScreen> wit
                           borderRadius: BorderRadius.circular(4),
                         ),
                         child: Text(
-                          'Q${_currentQuestionIndex + 1} (${q.maxMarks}M)',
+                          '${q.label} (${q.maxMarks}M)',
                           style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 11),
                         ),
                       ),
@@ -872,11 +1147,11 @@ class _ProctoredExamKioskScreenState extends State<ProctoredExamKioskScreen> wit
                 child: _inputMode == ResponseInputMode.digitalPen
                     ? DigitalPaperCanvas(
                         key: _canvasKeys.putIfAbsent(_currentQuestionIndex, () => GlobalKey<DigitalPaperCanvasState>()),
-                        questionTitle: 'Q${_currentQuestionIndex + 1}',
-                        pageNumber: _questions[_currentQuestionIndex].currentPageNumber,
-                        totalPages: _questions[_currentQuestionIndex].totalPages,
+                        questionTitle: q.label,
+                        pageNumber: q.currentPageNumber,
+                        totalPages: q.totalPages,
                         onPageAdded: _addNewPage,
-                        initialImageBase64: _questions[_currentQuestionIndex].answerImageBase64,
+                        initialImageBase64: q.answerImageBase64,
                       )
                     : _buildAlternativeInputView(q),
               ),

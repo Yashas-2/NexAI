@@ -20,7 +20,7 @@ const ROLE_ROUTES: Record<string, string> = {
   HOD: "/hod",
   PAPER_SETTER: "/setter",
   EVALUATOR: "/evaluator",
-  SCRUTINIZER: "/scrutinizer",
+  SCRUTINIZER: "/main-evaluator",
   SCANNING_OFFICER: "/scanning",
   FACULTY: "/faculty",
   INVIGILATOR: "/mobile-app",
@@ -265,9 +265,9 @@ export default function App() {
             <RoleGuard allowedRoles={["PAPER_SETTER"]}><SetterWorkspace /></RoleGuard>
           } />
           <Route path="/evaluator/*" element={
-            <RoleGuard allowedRoles={["EVALUATOR"]}><EvaluatorDashboard /></RoleGuard>
+            <RoleGuard allowedRoles={["EVALUATOR", "FACULTY"]}><EvaluatorDashboard /></RoleGuard>
           } />
-          <Route path="/scrutinizer/*" element={
+          <Route path="/main-evaluator/*" element={
             <RoleGuard allowedRoles={["SCRUTINIZER"]}><ScrutinizerDashboard /></RoleGuard>
           } />
           <Route path="/scanning/*" element={

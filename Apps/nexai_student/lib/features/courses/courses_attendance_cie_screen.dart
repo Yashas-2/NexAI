@@ -11,7 +11,6 @@ class CoursesAttendanceCieScreen extends StatefulWidget {
 }
 
 class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen> {
-  String _selectedFilter = 'ALL';
   List<dynamic> _courses = [];
   bool _isLoading = true;
 
@@ -38,7 +37,25 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
     }
   }
 
+  double? _attPct(dynamic course) {
+    final v = course['attendance_percentage'];
+    if (v == null) return null;
+    if (v is num) return v.toDouble();
+    return double.tryParse(v.toString());
+  }
+
+  double? _num(dynamic value) {
+    if (value == null) return null;
+    if (value is num) return value.toDouble();
+    return double.tryParse(value.toString());
+  }
+
   void _openCourseDetailsModal(dynamic course) {
+    final attPct = _attPct(course);
+    final cieMarks = _num(course['cie_marks']);
+    final isEligible = course['is_eligible'];
+    final coordinator = course['coordinator_name'];
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -74,7 +91,7 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                           style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 16),
                         ),
                         Text(
-                          'Instructor: TBA',
+                          'Course Coordinator: ${coordinator ?? 'Not assigned'}',
                           style: const TextStyle(fontSize: 12, color: AppTheme.textSecondary),
                         ),
                       ],
@@ -95,8 +112,7 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Attendance Deep Dive
-                    Text('Attendance Analytics & Bunk Buffer', style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 14)),
+                    Text('Attendance', style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 14)),
                     const SizedBox(height: 10),
                     Container(
                       padding: const EdgeInsets.all(16),
@@ -105,47 +121,103 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                         borderRadius: BorderRadius.circular(16),
                         border: Border.all(color: AppTheme.cardBorder),
                       ),
-                      child: Column(
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text('Classes Attended: ${course['attended_classes'] ?? 0} / ${course['total_classes'] ?? 0}', style: const TextStyle(fontWeight: FontWeight.w700)),
-                              Text('${(course['attendance_percentage'] ?? 100.0).toStringAsFixed(1)}%', style: const TextStyle(fontWeight: FontWeight.w900, color: AppTheme.accentGreen, fontSize: 16)),
-                            ],
-                          ),
-                          const SizedBox(height: 10),
-                          LinearProgressIndicator(
-                            value: (course['attendance_percentage'] ?? 100.0) / 100,
-                            backgroundColor: Colors.grey.shade200,
-                            valueColor: AlwaysStoppedAnimation<Color>(
-                              (course['attendance_percentage'] ?? 100.0) >= 85 ? AppTheme.accentGreen : ((course['attendance_percentage'] ?? 100.0) >= 75 ? AppTheme.accentAmber : AppTheme.accentRed),
+                      child: attPct == null
+                          ? const Row(
+                              children: [
+                                Icon(Icons.info_outline, color: AppTheme.textSecondary, size: 16),
+                                SizedBox(width: 8),
+                                Text(
+                                  'Attendance not recorded for this subject yet.',
+                                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 12),
+                                ),
+                              ],
+                            )
+                          : Column(
+                              children: [
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    const Text('Attendance', style: TextStyle(fontWeight: FontWeight.w700)),
+                                    Text(
+                                      '${attPct.toStringAsFixed(1)}%',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w900,
+                                        fontSize: 16,
+                                        color: attPct >= 85
+                                            ? AppTheme.accentGreen
+                                            : (attPct >= 75 ? AppTheme.accentAmber : AppTheme.accentRed),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 10),
+                                LinearProgressIndicator(
+                                  value: attPct / 100,
+                                  backgroundColor: Colors.grey.shade200,
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                    attPct >= 85
+                                        ? AppTheme.accentGreen
+                                        : (attPct >= 75 ? AppTheme.accentAmber : AppTheme.accentRed),
+                                  ),
+                                  minHeight: 8,
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                const SizedBox(height: 12),
+                                Row(
+                                  children: [
+                                    Icon(
+                                      isEligible == true ? Icons.verified : Icons.pending_actions_outlined,
+                                      color: isEligible == true ? AppTheme.accentGreen : AppTheme.accentAmber,
+                                      size: 16,
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                      child: Text(
+                                        isEligible == true
+                                            ? 'Hall Ticket: Eligible (no shortage)'
+                                            : (isEligible == false
+                                                ? 'Hall Ticket: Not eligible — check with faculty'
+                                                : 'Hall Ticket: Eligibility not yet evaluated'),
+                                        style: TextStyle(
+                                          color: isEligible == true
+                                              ? AppTheme.accentGreen
+                                              : AppTheme.accentAmber,
+                                          fontWeight: FontWeight.w700,
+                                          fontSize: 11,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
                             ),
-                            minHeight: 8,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          const SizedBox(height: 12),
-                          const Row(
-                            children: [
-                              Icon(Icons.verified, color: AppTheme.accentGreen, size: 16),
-                              SizedBox(width: 6),
-                              Text('Hall Ticket Clearance: ELIGIBLE (No shortage)', style: TextStyle(color: AppTheme.accentGreen, fontWeight: FontWeight.w700, fontSize: 11)),
-                            ],
-                          ),
-                        ],
-                      ),
                     ),
 
                     const SizedBox(height: 20),
 
-                    // CIE Component Breakdown
-                    Text('CIE Internal Assessment (Max 50 M)', style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 14)),
+                    Text('CIE Internal Assessment', style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 14)),
                     const SizedBox(height: 10),
 
-                    _buildCieRow('Internal Assessment Test 1 (IAT-1)', '— / 20.0 M', 'Conducted by faculty'),
-                    _buildCieRow('Internal Assessment Test 2 (IAT-2)', '— / 20.0 M', 'Conducted by faculty'),
-                    _buildCieRow('Internal Assessment Test 3 (IAT-3)', '— / 20.0 M', 'Conducted by faculty'),
-                    _buildCieRow('Lab / Assignment / Quiz', '— / 10.0 M', 'Evaluated continuously'),
+                    _buildCieRow(
+                      'Internal Assessment Test 1 (IAT-1)',
+                      _num(course['cie1'])?.toStringAsFixed(1) ?? 'Not entered',
+                      'Entered by faculty',
+                    ),
+                    _buildCieRow(
+                      'Internal Assessment Test 2 (IAT-2)',
+                      _num(course['cie2'])?.toStringAsFixed(1) ?? 'Not entered',
+                      'Entered by faculty',
+                    ),
+                    _buildCieRow(
+                      'Internal Assessment Test 3 (IAT-3)',
+                      _num(course['cie3'])?.toStringAsFixed(1) ?? 'Not entered',
+                      'Entered by faculty',
+                    ),
+                    _buildCieRow(
+                      'Lab / Assignment / Quiz',
+                      _num(course['labOrProject'])?.toStringAsFixed(1) ?? 'Not entered',
+                      'Evaluated continuously',
+                    ),
 
                     const SizedBox(height: 14),
 
@@ -163,45 +235,12 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text('TOTAL AGGREGATED CIE', style: TextStyle(color: AppTheme.primaryDark, fontWeight: FontWeight.w800, fontSize: 11)),
-                              Text('(Best 2 Tests + Lab/Assignment)', style: TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+                              Text('(out of 50)', style: TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
                             ],
                           ),
                           Text(
-                            '${course['cie_status'] ?? 'TBA'}',
+                            cieMarks != null ? cieMarks.toStringAsFixed(1) : 'Not entered',
                             style: const TextStyle(color: AppTheme.primaryDark, fontWeight: FontWeight.w900, fontSize: 16),
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    const SizedBox(height: 20),
-
-                    // Grade Predictor for SEE End-Semester Exam
-                    Text('SEE Target Grade Calculator', style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 14)),
-                    const SizedBox(height: 10),
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF0F172A),
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('TARGETING GRADE S (≥90):', style: TextStyle(color: Color(0xFF4ADE80), fontWeight: FontWeight.w800, fontSize: 10)),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Score ≥ ${90 > (course['cie_status'] == 'TBA' ? 0 : 40) ? 90 - (0) : 50} / 100 in SEE',
-                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 14),
-                          ),
-                          const SizedBox(height: 8),
-                          const Divider(color: Colors.white24, height: 1),
-                          const SizedBox(height: 8),
-                          const Text('TARGETING GRADE D (≥50):', style: TextStyle(color: Color(0xFF93C5FD), fontWeight: FontWeight.w800, fontSize: 10)),
-                          const SizedBox(height: 4),
-                          const Text(
-                            'Score ≥ 50 / 100 in SEE',
-                            style: TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 14),
                           ),
                         ],
                       ),
@@ -228,13 +267,16 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(label, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
-              Text(subtitle, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 10)),
-            ],
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+                Text(subtitle, style: const TextStyle(color: AppTheme.textSecondary, fontSize: 10)),
+              ],
+            ),
           ),
+          const SizedBox(width: 8),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(
@@ -257,8 +299,17 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
       );
     }
 
-    final filteredCourses = _courses;
-    final avgAttendance = _courses.isEmpty ? 0.0 : _courses.map<double>((c) => (c['attendance_percentage'] ?? 100.0) as double).reduce((a, b) => a + b) / _courses.length;
+    final attValues = _courses
+        .map(_attPct)
+        .whereType<double>()
+        .toList();
+    final avgAttendance = attValues.isEmpty
+        ? null
+        : attValues.reduce((a, b) => a + b) / attValues.length;
+    final totalCredits = _courses.fold<int>(
+      0,
+      (sum, c) => sum + ((c['credits'] is num) ? (c['credits'] as num).toInt() : 0),
+    );
 
     return Scaffold(
       backgroundColor: AppTheme.bgBase,
@@ -297,7 +348,16 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                     children: [
                       const Text('AVG. ATTENDANCE', style: TextStyle(color: Colors.white70, fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 0.5)),
                       const SizedBox(height: 4),
-                      Text('${avgAttendance.toStringAsFixed(1)}%', style: TextStyle(color: avgAttendance >= 85 ? const Color(0xFF4ADE80) : Colors.amber, fontWeight: FontWeight.w900, fontSize: 28)),
+                      Text(
+                        avgAttendance != null ? '${avgAttendance.toStringAsFixed(1)}%' : '—',
+                        style: TextStyle(
+                          color: avgAttendance == null
+                              ? Colors.white70
+                              : (avgAttendance >= 85 ? const Color(0xFF4ADE80) : Colors.amber),
+                          fontWeight: FontWeight.w900,
+                          fontSize: 28,
+                        ),
+                      ),
                     ],
                   ),
                   Container(
@@ -309,7 +369,7 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                     child: Column(
                       children: [
                         const Text('Total Credits', style: TextStyle(color: Colors.white70, fontSize: 10, fontWeight: FontWeight.w600)),
-                        Text('${_courses.length * 4}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 16)),
+                        Text('$totalCredits', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 16)),
                       ],
                     ),
                   ),
@@ -320,15 +380,21 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
             const SizedBox(height: 18),
 
             // ── Registered Courses List ──
-            if (filteredCourses.isEmpty)
-               const Text('No enrollments found.', style: TextStyle(color: Colors.red)),
+            if (_courses.isEmpty)
+               const Text('No enrollments found.', style: TextStyle(color: AppTheme.textSecondary)),
 
-            ...filteredCourses.map((course) {
-              final attended = course['attended_classes'] ?? 0;
-              final total = course['total_classes'] ?? 0;
-              final attPct = (course['attendance_percentage'] ?? 100.0) as double;
-              final isAbove85 = attPct >= 85;
-              final isAbove75 = attPct >= 75;
+            ..._courses.map((course) {
+              final attPct = _attPct(course);
+              final cieMarks = _num(course['cie_marks']);
+              final credits = (course['credits'] is num) ? (course['credits'] as num).toInt() : null;
+              final coordinator = course['coordinator_name'];
+
+              Color attColor = AppTheme.textSecondary;
+              if (attPct != null) {
+                attColor = attPct >= 85
+                    ? AppTheme.accentGreen
+                    : (attPct >= 75 ? AppTheme.accentAmber : AppTheme.accentRed);
+              }
 
               return InkWell(
                 onTap: () => _openCourseDetailsModal(course),
@@ -363,9 +429,9 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                                   style: GoogleFonts.inter(fontWeight: FontWeight.w800, fontSize: 14),
                                 ),
                                 const SizedBox(height: 2),
-                                const Text(
-                                  'Instructor: TBA',
-                                  style: TextStyle(color: AppTheme.textSecondary, fontSize: 11),
+                                Text(
+                                  'Coordinator: ${coordinator ?? 'Not assigned'}',
+                                  style: const TextStyle(color: AppTheme.textSecondary, fontSize: 11),
                                 ),
                               ],
                             ),
@@ -376,9 +442,9 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                               color: AppTheme.primaryLight,
                               borderRadius: BorderRadius.circular(6),
                             ),
-                            child: const Text(
-                              '4 Credits',
-                              style: TextStyle(color: AppTheme.primaryDark, fontWeight: FontWeight.w800, fontSize: 11),
+                            child: Text(
+                              credits != null ? '$credits Credits' : 'Credits —',
+                              style: const TextStyle(color: AppTheme.primaryDark, fontWeight: FontWeight.w800, fontSize: 11),
                             ),
                           ),
                         ],
@@ -401,27 +467,30 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                                   children: [
                                     const Text('Attendance:', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary, fontWeight: FontWeight.w600)),
                                     Text(
-                                      '${attPct.toStringAsFixed(1)}%',
+                                      attPct != null ? '${attPct.toStringAsFixed(1)}%' : '—',
                                       style: TextStyle(
                                         fontWeight: FontWeight.w900,
                                         fontSize: 12,
-                                        color: isAbove85 ? AppTheme.accentGreen : (isAbove75 ? AppTheme.accentAmber : AppTheme.accentRed),
+                                        color: attColor,
                                       ),
                                     ),
                                   ],
                                 ),
                                 const SizedBox(height: 6),
                                 LinearProgressIndicator(
-                                  value: attPct / 100,
+                                  value: attPct != null ? attPct / 100 : null,
                                   backgroundColor: Colors.grey.shade200,
-                                  valueColor: AlwaysStoppedAnimation<Color>(
-                                    isAbove85 ? AppTheme.accentGreen : (isAbove75 ? AppTheme.accentAmber : AppTheme.accentRed),
-                                  ),
+                                  valueColor: AlwaysStoppedAnimation<Color>(attColor),
                                   minHeight: 6,
                                   borderRadius: BorderRadius.circular(3),
                                 ),
                                 const SizedBox(height: 4),
-                                Text('$attended/$total classes attended', style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+                                Text(
+                                  attPct != null
+                                      ? (attPct >= 85 ? 'Meets 85% requirement' : 'Shortage — below 85%')
+                                      : 'Attendance not recorded',
+                                  style: const TextStyle(fontSize: 10, color: AppTheme.textSecondary),
+                                ),
                               ],
                             ),
                           ),
@@ -439,9 +508,9 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                   children: [
                                     const Text('CIE Score:', style: TextStyle(fontSize: 11, color: AppTheme.textSecondary, fontWeight: FontWeight.w600)),
-                                    const Text(
-                                      'TBA / 50',
-                                      style: TextStyle(
+                                    Text(
+                                      cieMarks != null ? '${cieMarks.toStringAsFixed(1)} / 50' : 'Not entered',
+                                      style: const TextStyle(
                                         fontWeight: FontWeight.w900,
                                         fontSize: 12,
                                         color: AppTheme.accentBlue,
@@ -451,14 +520,14 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                                 ),
                                 const SizedBox(height: 6),
                                 LinearProgressIndicator(
-                                  value: 0.0,
+                                  value: cieMarks != null ? (cieMarks / 50).clamp(0.0, 1.0) : null,
                                   backgroundColor: Colors.grey.shade200,
                                   valueColor: const AlwaysStoppedAnimation<Color>(AppTheme.accentBlue),
                                   minHeight: 6,
                                   borderRadius: BorderRadius.circular(3),
                                 ),
                                 const SizedBox(height: 4),
-                                const Text('Passing: 20/50 M (40%)', style: TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
+                                const Text('Eligibility: CIE ≥ 20/50 (with lab)', style: TextStyle(fontSize: 10, color: AppTheme.textSecondary)),
                               ],
                             ),
                           ),
@@ -469,7 +538,7 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
                       Row(
                         mainAxisAlignment: MainAxisAlignment.end,
                         children: [
-                          Text('View Test-wise Breakdown →', style: TextStyle(color: AppTheme.primary, fontWeight: FontWeight.w700, fontSize: 11)),
+                          Text('View Component-wise Breakdown →', style: TextStyle(color: AppTheme.primary, fontWeight: FontWeight.w700, fontSize: 11)),
                         ],
                       ),
                     ],
@@ -478,31 +547,6 @@ class _CoursesAttendanceCieScreenState extends State<CoursesAttendanceCieScreen>
               );
             }),
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildFilterChip(String key, String label) {
-    final isSelected = _selectedFilter == key;
-    return InkWell(
-      onTap: () => setState(() => _selectedFilter = key),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        decoration: BoxDecoration(
-          color: isSelected ? AppTheme.primary : AppTheme.bgSurface,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-            color: isSelected ? AppTheme.primary : AppTheme.cardBorder,
-          ),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: isSelected ? Colors.white : AppTheme.textSecondary,
-            fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
-            fontSize: 11,
-          ),
         ),
       ),
     );

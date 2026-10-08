@@ -287,12 +287,15 @@ class InvigilationDutySerializer(serializers.ModelSerializer):
     exam_date = serializers.DateField(source="timetable_slot.exam_date", read_only=True)
     start_time = serializers.TimeField(source="timetable_slot.start_time", read_only=True)
     end_time = serializers.TimeField(source="timetable_slot.end_time", read_only=True)
+    subject_code = serializers.CharField(source="timetable_slot.subject.code", read_only=True)
+    subject_name = serializers.CharField(source="timetable_slot.subject.name", read_only=True)
 
     class Meta:
         model = InvigilationDuty
         fields = [
             "id", "timetable_slot", "invigilator", "invigilator_name", "employee_id",
             "room_name", "exam_date", "start_time", "end_time",
+            "subject_code", "subject_name",
             "duty_role", "assigned_at"
         ]
         read_only_fields = ["id", "assigned_at"]
@@ -311,11 +314,16 @@ class StudentSubjectEnrollmentSerializer(serializers.ModelSerializer):
     subject_name = serializers.CharField(source="subject.name", read_only=True)
     exam_session_name = serializers.CharField(source="exam_session.name", read_only=True)
     subject_title = serializers.CharField(source="subject.name", read_only=True)
-    attended_classes = serializers.IntegerField(default=0)
-    total_classes = serializers.IntegerField(default=0)
-    attendance_percentage = serializers.FloatField(default=100.0)
-    cie_status = serializers.CharField(default="TBA")
-    
+    credits = serializers.IntegerField(source="subject.credits", read_only=True)
+    exam_duration_mins = serializers.IntegerField(source="subject.exam_duration_mins", read_only=True)
+    coordinator_name = serializers.SerializerMethodField()
+
+    # Real data: derived from the student's latest eligibility record (null when unknown)
+    attendance_percentage = serializers.SerializerMethodField()
+    cie_status = serializers.SerializerMethodField()
+    cie_marks = serializers.SerializerMethodField()
+    is_eligible = serializers.SerializerMethodField()
+
     cie1 = serializers.SerializerMethodField()
     cie2 = serializers.SerializerMethodField()
     cie3 = serializers.SerializerMethodField()
@@ -327,18 +335,43 @@ class StudentSubjectEnrollmentSerializer(serializers.ModelSerializer):
             "id", "student", "student_name", "student_usn",
             "subject", "subject_code", "subject_name", "subject_title",
             "exam_session", "exam_session_name", "enrolled_at",
-            "attended_classes", "total_classes", "attendance_percentage", "cie_status",
+            "credits", "exam_duration_mins", "coordinator_name",
+            "attendance_percentage", "cie_status", "cie_marks", "is_eligible",
             "cie1", "cie2", "cie3", "labOrProject"
         ]
         read_only_fields = ["id", "enrolled_at"]
-        
+
+    def get_coordinator_name(self, obj):
+        coordinator = getattr(obj.subject, "coordinator", None)
+        if coordinator is None:
+            return None
+        return getattr(coordinator, "full_name", None) or getattr(coordinator, "email", None)
+
+    def get_cie_status(self, obj):
+        elig = self._get_eligibility(obj)
+        if elig is None or elig.cie_marks is None:
+            return None  # not yet evaluated — UI must show placeholder, not 'TBA'
+        return str(elig.cie_marks)
+
+    def get_cie_marks(self, obj):
+        elig = self._get_eligibility(obj)
+        if elig is None or elig.cie_marks is None:
+            return None
+        return float(elig.cie_marks)
+
+    def get_is_eligible(self, obj):
+        elig = self._get_eligibility(obj)
+        if elig is None:
+            return None
+        return bool(elig.is_eligible)
+
     def _get_eligibility(self, obj):
         if not hasattr(obj, '_cached_eligibility'):
             from eligibility.models import StudentEligibility
             obj._cached_eligibility = StudentEligibility.objects.filter(
                 student=obj.student,
                 subject=obj.subject
-            ).order_by('-created_at').first()
+            ).order_by('-updated_at', '-created_at').first()
         return obj._cached_eligibility
 
     def get_cie1(self, obj):

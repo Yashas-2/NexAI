@@ -10,9 +10,10 @@ import { AllocationsTab } from './features/allocations/AllocationsTab';
 import { CredentialManagementTab } from './features/credentials/CredentialManagementTab';
 import { RadarTab } from './features/RadarTab';
 import { AuditTab } from './features/AuditTab';
-import { ShieldAlert, BookOpen, Building, CalendarDays, FileText, KeyRound } from 'lucide-react';
+import { ResultsPublishTab } from './features/results/ResultsPublishTab';
+import { ShieldAlert, BookOpen, Building, CalendarDays, FileText, KeyRound, Award } from 'lucide-react';
 
-type Tab = 'VAULT' | 'CURRICULUM' | 'RESOURCES' | 'ALLOCATIONS' | 'CREDENTIALS' | 'RADAR' | 'AUDIT';
+type Tab = 'VAULT' | 'CURRICULUM' | 'RESOURCES' | 'ALLOCATIONS' | 'CREDENTIALS' | 'RADAR' | 'AUDIT' | 'RESULTS';
 
 export default function CoEDashboard() {
   const user = useAuthStore(s => s.user);
@@ -77,12 +78,15 @@ export default function CoEDashboard() {
         return <RadarTab data={radarData} loading={loading} error={error} />;
       case 'AUDIT':
         return <AuditTab logs={auditLogs} metrics={metrics} loading={loading} error={error} />;
+      case 'RESULTS':
+        return <ResultsPublishTab />;
       default:
         return <div>Select a tab</div>;
     }
   };
 
   const sidebarItems = [
+    { id: 'RESULTS', label: 'Results Publication', icon: <Award size={20} /> },
     { id: 'ALLOCATIONS', label: 'SEE Allocations & Schedules', icon: <CalendarDays size={20} /> },
     { id: 'CREDENTIALS', label: 'User Access & Credentials', icon: <KeyRound size={20} /> },
     { id: 'CURRICULUM', label: 'Curriculum', icon: <BookOpen size={20} /> },

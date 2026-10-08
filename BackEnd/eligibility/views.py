@@ -103,22 +103,30 @@ class StudentEligibilityViewSet(viewsets.ModelViewSet):
 
 class HallTicketViewSet(viewsets.ReadOnlyModelViewSet):
     """
-    HOD can view all hall tickets.
+    HOD sees only their own department's students' hall tickets.
+    CoE / Chief Superintendent sees all.
     Student can only view their own hall ticket.
     """
     serializer_class = HallTicketSerializer
     permission_classes = [IsAuthenticated]
+    pagination_class = None  # return ALL tickets — the UI filters client-side
 
     def get_queryset(self):
         user = self.request.user
         if hasattr(user, 'student_profile'):
-            return HallTicket.objects.filter(student=user.student_profile, is_revoked=False)
+            return HallTicket.objects.filter(
+                student=user.student_profile, is_revoked=False
+            ).order_by('-created_at')
         qs = HallTicket.objects.all()
+        # HOD → own branch only (never other departments' students)
+        if getattr(user, 'role', None) == 'HOD':
+            dept = getattr(user, 'hod_department', None) or getattr(user, 'department', None)
+            if dept:
+                qs = qs.filter(student__department=dept)
         session_id = self.request.query_params.get('session_id')
         if session_id:
             qs = qs.filter(exam_session_id=session_id)
-        return qs
-
+        return qs.order_by('-created_at')
 
 class BulkEligibilityUploadView(views.APIView):
     """
@@ -172,7 +180,10 @@ class GenerateHallTicketsView(views.APIView):
         if not ExamSession.objects.filter(id=session_id).exists():
             return Response({"error": "Exam Session not found."}, status=status.HTTP_404_NOT_FOUND)
             
-        result = generate_hall_tickets_for_session(session_id)
+        result = generate_hall_tickets_for_session(
+            session_id,
+            department_id=str(request.user.department_id) if request.user.department_id else None,
+        )
         if result.get("status") == "error":
             return Response({"error": result.get("message")}, status=status.HTTP_400_BAD_REQUEST)
             

@@ -22,6 +22,7 @@ interface HallTicketsTabProps {
   hallTickets: HallTicketRecord[];
   students: StudentEligibilityRecord[];
   onUpdateHallTickets: (updatedList: HallTicketRecord[]) => void;
+  onRefreshTickets?: () => void;
 }
 
 const SEMESTER_SUBJECTS: Record<string, { code: string; title: string }[]> = {
@@ -46,6 +47,7 @@ export const HallTicketsTab: React.FC<HallTicketsTabProps> = ({
   hallTickets,
   students,
   onUpdateHallTickets,
+  onRefreshTickets,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSemester, setSelectedSemester] = useState('ALL');
@@ -65,6 +67,15 @@ export const HallTicketsTab: React.FC<HallTicketsTabProps> = ({
         const res = await api.get('/scheduling/sessions/');
         const data = res.data.results || res.data;
         setSessions(data);
+        // Auto-select the SEE session so tickets are visible immediately
+        setSelectedSessionId(prev => {
+          if (prev !== 'NONE') return prev;
+          const see = data.find((s: any) =>
+            String(s.session_type || '').toUpperCase() === 'SEE' ||
+            /SEE|SEMESTER END/i.test(s.name || '')
+          ) || data[0];
+          return see ? see.id : 'NONE';
+        });
       } catch (err) {}
     };
     fetchSessions();
@@ -95,7 +106,7 @@ export const HallTicketsTab: React.FC<HallTicketsTabProps> = ({
     if (selectedSession && t.examSession !== selectedSession.name && t.examSession !== selectedSession.id) return false;
 
     // 1. Semester filter
-    if (selectedSemester !== 'ALL' && !t.semester.includes(selectedSemester)) return false;
+    if (selectedSemester !== 'ALL' && !String(t.semester || '').includes(selectedSemester)) return false;
 
     // 2. Exam / CIE Cycle filter
     if (selectedExamCycle !== 'ALL' && (t.examCycle || 'CIE-1') !== selectedExamCycle) return false;
@@ -161,10 +172,13 @@ export const HallTicketsTab: React.FC<HallTicketsTabProps> = ({
   };
 
   const handleBatchGenerateSuccess = (newTickets: HallTicketRecord[]) => {
-    // Merge new tickets without duplicates
-    const existingUsns = hallTickets.map(t => t.usn);
-    const uniqueNew = newTickets.filter(t => !existingUsns.includes(t.usn));
-    onUpdateHallTickets([...hallTickets, ...uniqueNew]);
+    if (newTickets.length > 0) {
+      const existingUsns = hallTickets.map(t => t.usn);
+      const uniqueNew = newTickets.filter(t => !existingUsns.includes(t.usn));
+      onUpdateHallTickets([...hallTickets, ...uniqueNew]);
+    }
+    // Always re-fetch from backend so freshly generated tickets appear
+    if (onRefreshTickets) onRefreshTickets();
   };
 
   return (

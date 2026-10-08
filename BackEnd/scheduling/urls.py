@@ -20,6 +20,8 @@ from .views import (
     InvigilatorSessionKeyView,
     InvigilatorSessionKeyActivateView,
     MarkAttendanceView,
+    InvigilatorIncidentView,
+    InvigilatorBookletView,
 )
 
 app_name = "scheduling"
@@ -55,4 +57,6 @@ urlpatterns = [
     path("invigilator-keys/",         InvigilatorSessionKeyView.as_view(), name="invigilator-key-list"),
     path("invigilator-keys/activate/", InvigilatorSessionKeyActivateView.as_view(), name="invigilator-key-activate"),
     path("invigilator/mark-attendance/", MarkAttendanceView.as_view(), name="mark-attendance"),
+    path("invigilator/incident/",     InvigilatorIncidentView.as_view(), name="invigilator-incident"),
+    path("invigilator/booklet/",      InvigilatorBookletView.as_view(), name="invigilator-booklet"),
 ]

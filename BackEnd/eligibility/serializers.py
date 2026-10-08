@@ -62,6 +62,9 @@ class HallTicketSerializer(serializers.ModelSerializer):
         read_only_fields = ["ticket_number", "qr_code_data", "is_revoked"]
 
     def get_is_cie(self, obj):
+        session_type = getattr(obj.exam_session, 'session_type', None)
+        if session_type:
+            return session_type == 'CIE'
         return 'CIE' in (obj.exam_session.name or '').upper()
 
     def get_schedule(self, obj):
@@ -85,31 +88,58 @@ class HallTicketSerializer(serializers.ModelSerializer):
             return None
 
         # Get the subjects the student is eligible for in this session
-        eligible_subjects = StudentEligibility.objects.filter(
+        eligible_subjects = list(StudentEligibility.objects.filter(
             student=obj.student,
             exam_session=obj.exam_session,
             is_eligible=True
-        ).values_list('subject_id', flat=True)
+        ).values_list('subject_id', flat=True))
 
-        # Fallback: if no eligibility records, use enrolled subjects
+        # Fallback: eligibility lives in the CIE session, so for SEE sessions
+        # resolve each subject from the student's latest eligibility record.
+        if not eligible_subjects:
+            seen = set()
+            latest = StudentEligibility.objects.filter(
+                student=obj.student
+            ).order_by('-updated_at', '-created_at').values_list('subject_id', 'is_eligible')
+            for subject_id, is_eligible in latest:
+                if subject_id in seen:
+                    continue
+                seen.add(subject_id)
+                if is_eligible:
+                    eligible_subjects.append(subject_id)
+
+        # Fallback: if no eligibility records at all, use enrolled subjects
         if not eligible_subjects:
             enrolled_subjects = StudentSubjectEnrollment.objects.filter(
                 student=obj.student,
                 exam_session=obj.exam_session,
             ).values_list('subject_id', flat=True)
-            eligible_subjects = enrolled_subjects
+            eligible_subjects = list(enrolled_subjects)
 
         slots = TimetableSlot.objects.filter(
             exam_session=obj.exam_session,
             subject_id__in=eligible_subjects,
-            status__in=['SCHEDULED', 'CONFIRMED']
-        ).select_related('subject', 'room')
+            status__in=['SCHEDULED', 'CONFIRMED'],
+        ).select_related('subject', 'room').order_by(
+            'exam_date', 'start_time', 'subject__code', 'room__name'
+        )
+
+        # Verified eligibility (any session) — surfaces per-subject status to the UI
+        verified_eligible = set(
+            StudentEligibility.objects.filter(
+                student=obj.student, is_eligible=True
+            ).values_list('subject_id', flat=True)
+        )
 
         from vault.models import QuestionPaper
-        # Pre-fetch all papers for this session
+        # Pre-fetch all finalized papers for this session — drafts are still
+        # being authored and must never be linked to a student's schedule.
         papers_map = {
             str(p.subject_id): str(p.id) 
-            for p in QuestionPaper.objects.filter(exam_session=obj.exam_session)
+            for p in QuestionPaper.objects.filter(
+                exam_session=obj.exam_session,
+                status__in=['DRAFT', 'SUBMITTED', 'APPROVED', 'ENCRYPTED', 'DISTRIBUTED'],
+            )
         }
         
         if 'CIE' in (obj.exam_session.name or '').upper():
@@ -131,12 +161,28 @@ class HallTicketSerializer(serializers.ModelSerializer):
 
         data = []
         if slots.exists():
-            for slot in slots:
-                seat = (slot.seat_map or {}).get(obj.student.usn)
-                # Only include slots where this student is actually assigned
-                if seat is None and slot.seat_map:
-                    continue
-                seat = seat or "Unassigned"
+            slot_list = list(slots)
+            usn = obj.student.usn
+            # Subjects where this student already holds a seat in some hall
+            seated_subjects = {
+                s.subject_id for s in slot_list if (s.seat_map or {}).get(usn)
+            }
+            seen_unseated = set()
+            for slot in slot_list:
+                seat = (slot.seat_map or {}).get(usn)
+                if seat is None:
+                    # A hall that has seats but not this student's → skip
+                    if slot.seat_map:
+                        continue
+                    # Student is seated in another hall for this subject → skip
+                    if slot.subject_id in seated_subjects:
+                        continue
+                    # Unseated placeholder (seat not allotted yet) — max one row
+                    if slot.subject_id in seen_unseated:
+                        continue
+                    seen_unseated.add(slot.subject_id)
+                start = slot.start_time.strftime('%H:%M') if slot.start_time else None
+                end = slot.end_time.strftime('%H:%M') if slot.end_time else None
                 data.append({
                     "subject_code": slot.subject.code,
                     "subject_name": slot.subject.name,
@@ -145,25 +191,39 @@ class HallTicketSerializer(serializers.ModelSerializer):
                     "exam_date": slot.exam_date.isoformat() if slot.exam_date else None,
                     "start_time": slot.start_time.isoformat() if slot.start_time else None,
                     "end_time": slot.end_time.isoformat() if slot.end_time else None,
-                    "exam_time": f"{slot.start_time.strftime('%H:%M') if slot.start_time else 'TBA'} - {slot.end_time.strftime('%H:%M') if slot.end_time else 'TBA'}",
-                    "room": slot.room.name if slot.room else "TBA",
-                    "room_allocated": slot.room.name if slot.room else "TBA",
-                    "room_number": slot.room.name if slot.room else "TBA",
+                    "exam_time": f"{start} - {end}" if start and end else None,
+                    "room": slot.room.name if slot.room else None,
+                    "room_allocated": slot.room.name if slot.room else None,
+                    "room_number": slot.room.name if slot.room else None,
                     "seat": seat,
                     "desk_number": seat,
                     "slot_id": str(slot.id),
+                    "status": slot.status,
+                    "eligible": True if slot.subject_id in verified_eligible else None,
+                    "is_cie": obj.exam_session.session_type == 'CIE' if getattr(obj.exam_session, 'session_type', None) else ('CIE' in (obj.exam_session.name or '').upper()),
                     "question_paper_id": papers_map.get(str(slot.subject_id)),
                 })
         else:
             # Fallback: show eligible subjects even if no timetable slots exist yet
             # For CIE sessions, read the date/time from CIEConfiguration
-            eligibilities = StudentEligibility.objects.filter(
-                student=obj.student,
-                exam_session=obj.exam_session,
-                is_eligible=True
-            ).select_related('subject')
+            # Dedupe: keep only the latest eligibility record per subject
+            eligibilities = []
+            seen_subjects = set()
+            for elig in (
+                StudentEligibility.objects.filter(
+                    student=obj.student,
+                    exam_session=obj.exam_session,
+                    is_eligible=True,
+                )
+                .select_related('subject')
+                .order_by('-updated_at', '-created_at')
+            ):
+                if elig.subject_id in seen_subjects:
+                    continue
+                seen_subjects.add(elig.subject_id)
+                eligibilities.append(elig)
             
-            if eligibilities.exists():
+            if eligibilities:
                 from cie.models import CIEConfiguration
                 for elig in eligibilities:
                     cie_configs = CIEConfiguration.objects.filter(
@@ -176,8 +236,8 @@ class HallTicketSerializer(serializers.ModelSerializer):
                             exam_date = None
                             start_time = None
                             end_time = None
-                            exam_time = 'TBA'
-                            
+                            exam_time = None
+
                             if cie_config.scheduled_date:
                                 exam_date = cie_config.scheduled_date.isoformat()
                             if cie_config.scheduled_time:
@@ -191,6 +251,7 @@ class HallTicketSerializer(serializers.ModelSerializer):
                                     f"{end_dt.strftime('%H:%M')}"
                                 )
 
+                            room_name = getattr(cie_config, 'room', None)
                             data.append({
                                 "subject_code": elig.subject.code,
                                 "subject_name": f"{elig.subject.name} ({cie_config.get_cie_number_display()})",
@@ -200,15 +261,16 @@ class HallTicketSerializer(serializers.ModelSerializer):
                                 "start_time": start_time,
                                 "end_time": end_time,
                                 "exam_time": exam_time,
-                                "room": getattr(cie_config, 'room', None) or 'TBA',
-                                "room_allocated": 'TBA',
-                                "room_number": 'TBA',
-                                "seat": 'Unassigned',
-                                "desk_number": 'Unassigned',
+                                "room": room_name,
+                                "room_allocated": room_name,
+                                "room_number": room_name,
+                                "seat": None,
+                                "desk_number": None,
                                 "slot_id": None,
-                                "cie_marks": str(elig.cie_marks) if elig.cie_marks else 'N/A',
-                                "attendance": str(elig.attendance_percentage) if elig.attendance_percentage else 'N/A',
+                                "cie_marks": float(elig.cie_marks) if elig.cie_marks is not None else None,
+                                "attendance": float(elig.attendance_percentage) if elig.attendance_percentage is not None else None,
                                 "is_cie": True,
+                                "eligible": True,
                                 "question_paper_id": _get_scrutiny_id(cie_config) or papers_map.get(str(elig.subject_id)),
                             })
                     else:
@@ -220,16 +282,17 @@ class HallTicketSerializer(serializers.ModelSerializer):
                             "exam_date": None,
                             "start_time": None,
                             "end_time": None,
-                            "exam_time": "TBA",
-                            "room": 'TBA',
-                            "room_allocated": 'TBA',
-                            "room_number": 'TBA',
-                            "seat": 'Unassigned',
-                            "desk_number": 'Unassigned',
+                            "exam_time": None,
+                            "room": None,
+                            "room_allocated": None,
+                            "room_number": None,
+                            "seat": None,
+                            "desk_number": None,
                             "slot_id": None,
-                            "cie_marks": str(elig.cie_marks) if elig.cie_marks else 'N/A',
-                            "attendance": str(elig.attendance_percentage) if elig.attendance_percentage else 'N/A',
+                            "cie_marks": float(elig.cie_marks) if elig.cie_marks is not None else None,
+                            "attendance": float(elig.attendance_percentage) if elig.attendance_percentage is not None else None,
                             "is_cie": True,
+                            "eligible": True,
                             "question_paper_id": papers_map.get(str(elig.subject_id)),
                         })
             else:
@@ -238,6 +301,9 @@ class HallTicketSerializer(serializers.ModelSerializer):
                     student=obj.student,
                     exam_session=obj.exam_session,
                 ).select_related('subject')
+                # Only show subjects the student is actually eligible for
+                if eligible_subjects:
+                    enrolled = enrolled.filter(subject_id__in=eligible_subjects)
                 for enrollment in enrolled:
                     data.append({
                         "subject_code": enrollment.subject.code,
@@ -247,15 +313,16 @@ class HallTicketSerializer(serializers.ModelSerializer):
                         "exam_date": None,
                         "start_time": None,
                         "end_time": None,
-                        "exam_time": "TBA",
-                        "room": "TBA",
-                        "room_allocated": "TBA",
-                        "room_number": "TBA",
-                        "seat": "Unassigned",
-                        "desk_number": "Unassigned",
+                        "exam_time": None,
+                        "room": None,
+                        "room_allocated": None,
+                        "room_number": None,
+                        "seat": None,
+                        "desk_number": None,
                         "slot_id": None,
-                        "attendance": 'N/A',
+                        "attendance": None,
                         "is_cie": False,
+                        "eligible": None,
                         "question_paper_id": papers_map.get(str(enrollment.subject_id)),
                     })
         return data

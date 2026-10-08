@@ -262,6 +262,10 @@ class CIEAttempt(models.Model):
         choices=SubmissionStatus.choices,
         default=SubmissionStatus.IN_PROGRESS,
     )
+    proctor_strikes = models.PositiveSmallIntegerField(
+        default=0,
+        help_text="AI-proctor violations recorded during the attempt (0-3)",
+    )
 
     class Meta:
         db_table = "cie_attempt"
