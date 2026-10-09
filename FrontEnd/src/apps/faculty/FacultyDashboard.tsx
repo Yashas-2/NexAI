@@ -193,8 +193,17 @@ export default function FacultyDashboard() {
       if (!course || !course.id) return;
       try {
         const response = await api.get(`/scheduling/subjects/${course.id}/enrolled-students/`);
-        const enrollmentData = response.data;
-        const results = Array.isArray(enrollmentData) ? enrollmentData : (enrollmentData.results || []);
+        let enrollmentData: any = response.data;
+        let results = Array.isArray(enrollmentData) ? enrollmentData : (enrollmentData.results || []);
+        // Follow pagination so students past page 1 are never silently dropped.
+        let nextUrl = Array.isArray(enrollmentData) ? null : enrollmentData.next;
+        let guard = 0;
+        while (nextUrl && guard < 50) {
+          guard += 1;
+          const page: any = (await api.get(nextUrl)).data;
+          results = results.concat(Array.isArray(page) ? page : (page.results || []));
+          nextUrl = Array.isArray(page) ? null : page.next;
+        }
         
         // Capture the exam_session_id from the first enrollment
         if (results.length > 0 && results[0].exam_session) {

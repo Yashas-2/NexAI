@@ -107,6 +107,29 @@ class _AdmitCardScreenState extends State<AdmitCardScreen> {
         ? (latestTicket['is_cie'] == true || sessionName.toUpperCase().contains('CIE'))
         : false;
     final examTypeLabel = isCie ? 'CIE EXAMINATION HALL TICKET' : 'END-SEMESTER EXAM HALL TICKET';
+    // Exam start = earliest dated exam on this ticket; fall back to the
+    // session start date published by the CoE allocation wizard.
+    final sessionStartRaw = latestTicket != null && latestTicket['exam_session_details'] is Map
+        ? (latestTicket['exam_session_details']['start_date']?.toString() ?? '')
+        : '';
+    String sessionStartLabel = '';
+    const mn = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    DateTime? earliestExam;
+    for (final s in slots) {
+      final raw = s['exam_date'] ?? s['date'];
+      final d = raw != null ? DateTime.tryParse('$raw') : null;
+      if (d == null) continue;
+      if (earliestExam == null || d.isBefore(earliestExam)) earliestExam = d;
+    }
+    if (earliestExam != null) {
+      sessionStartLabel =
+          'Exams start ${earliestExam.day} ${mn[earliestExam.month - 1]} ${earliestExam.year}';
+    } else if (sessionStartRaw.isNotEmpty) {
+      final d = DateTime.tryParse(sessionStartRaw);
+      sessionStartLabel =
+          d != null ? 'Exams start ${d.day} ${mn[d.month - 1]} ${d.year}' : 'Exams start $sessionStartRaw';
+    }
     final ticketNumber = latestTicket != null ? (latestTicket['ticket_number'] ?? '') : '';
     final isRevoked = latestTicket != null && latestTicket['is_revoked'] == true;
     final issuedAt = latestTicket != null ? '${latestTicket['created_at'] ?? ''}' : '';
@@ -443,6 +466,15 @@ class _AdmitCardScreenState extends State<AdmitCardScreen> {
                                     sessionName.isNotEmpty ? sessionName : 'No active session',
                                     style: const TextStyle(color: AppTheme.textSecondary, fontSize: 10),
                                   ),
+                                  if (sessionStartLabel.isNotEmpty)
+                                    Text(
+                                      sessionStartLabel,
+                                      style: const TextStyle(
+                                        color: Color(0xFF2563EB),
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
                                   Text(
                                     isCie ? 'CIE Schedule' : 'End-Semester Schedule',
                                     style: const TextStyle(color: AppTheme.textSecondary, fontSize: 10),

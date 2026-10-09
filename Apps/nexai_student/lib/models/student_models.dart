@@ -33,6 +33,7 @@ class ExamScheduleItem {
   final String? questionPaperId;
   final String? slotId;
   final String? sessionName;
+  final String? sessionStartDate; // exam_session_details.start_date (yyyy-mm-dd)
   final bool isCie; // false = Semester End Examination (SEE)
   final bool attemptCompleted;
   final DateTime? attemptSubmittedAt;
@@ -53,6 +54,7 @@ class ExamScheduleItem {
     this.questionPaperId,
     this.slotId,
     this.sessionName,
+    this.sessionStartDate,
     this.isCie = true,
     this.attemptCompleted = false,
     this.attemptSubmittedAt,

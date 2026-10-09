@@ -91,6 +91,43 @@ class ExamSessionSerializer(serializers.ModelSerializer):
             .values_list("room__name", flat=True).distinct()
         )
 
+    def validate(self, data):
+        # Auto-assignment guard: the chief invigilator coming from the HOD
+        # wizard must be a normal FACULTY member of the subject's own branch.
+        subject_codes = self.initial_data.get("subject_codes") or []
+        calculated_sessions = self.initial_data.get("calculated_sessions") or []
+        if subject_codes and calculated_sessions:
+            subjects = {
+                s.code: s
+                for s in Subject.objects.filter(code__in=subject_codes).select_related("department")
+            }
+            for cs in calculated_sessions:
+                inv_id = cs.get("chiefInvigilatorId")
+                if not inv_id:
+                    continue
+                subj = subjects.get(cs.get("subjectCode"))
+                if not subj:
+                    continue
+                inv = User.objects.filter(id=inv_id).first()
+                if (
+                    not inv
+                    or inv.role != "FACULTY"
+                    or (
+                        subj.department_id
+                        and inv.department_id
+                        and inv.department_id != subj.department_id
+                    )
+                ):
+                    raise serializers.ValidationError(
+                        {
+                            "calculated_sessions": (
+                                f"Chief invigilator for {subj.code} must be a normal "
+                                f"faculty member of the same branch."
+                            )
+                        }
+                    )
+        return data
+
     def create(self, validated_data):
         subject_codes = validated_data.pop("subject_codes", [])
         calculated_sessions = self.initial_data.get("calculated_sessions", [])

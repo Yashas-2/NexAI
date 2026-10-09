@@ -321,17 +321,41 @@ class StudentPortalViewSet(viewsets.ViewSet):
                 "is_locked": attempt.is_locked,
                 "proctor_strikes": attempt.proctor_strikes,
             })
-        else:
-            # Check if exam session has ended (no attempt possible after end time)
-            from django.utils import timezone
-            exam_ended = exam_session.end_date is not None and timezone.now() > exam_session.end_date
-            
-            return Response({
-                "eligible": True,
-                "attempt_id": None,
-                "is_completed": False,
-                "exam_ended": exam_ended,
-                "message": "Exam not started yet" if not exam_ended else "Exam time has ended"
+
+        # CIE sessions: block retake once the student has submitted the CIE
+        # kiosk attempt (CIEAttempt is created on first save/submit).
+        is_cie_session = (
+            getattr(exam_session, 'session_type', None) == 'CIE'
+            or 'CIE' in (exam_session.name or '').upper()
+        )
+        if is_cie_session:
+            from cie.models import CIEAttempt
+            cie_attempt = CIEAttempt.objects.filter(
+                student=student,
+                cie_config__subject=subject,
+                cie_config__exam_session=exam_session,
+            ).first()
+            if cie_attempt:
+                is_completed = cie_attempt.is_locked or cie_attempt.submitted_at is not None
+                return Response({
+                    "eligible": True,
+                    "attempt_id": None,
+                    "is_completed": is_completed,
+                    "submitted_at": cie_attempt.submitted_at.isoformat() if cie_attempt.submitted_at else None,
+                    "is_locked": cie_attempt.is_locked,
+                    "submission_status": cie_attempt.submission_status,
+                })
+
+        # No attempt record — report whether the exam window has passed
+        from django.utils import timezone
+        exam_ended = exam_session.end_date is not None and timezone.now().date() > exam_session.end_date
+
+        return Response({
+            "eligible": True,
+            "attempt_id": None,
+            "is_completed": False,
+            "exam_ended": exam_ended,
+            "message": "Exam not started yet" if not exam_ended else "Exam time has ended"
             })
 
     def _see_exam_context(self, student, subject_code):

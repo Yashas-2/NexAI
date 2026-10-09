@@ -255,7 +255,9 @@ export const AllocationWizard: React.FC<AllocationWizardProps> = ({
       const payload = {
         name: scopeConfig.sessionName,
         academic_year: scopeConfig.academicYear,
-        start_date: scopeConfig.startDate || new Date().toISOString().split('T')[0],
+        // Students see exam_session.start_date as "exams start" — prefer the
+        // First Exam Date so the visible date is when exams actually begin.
+        start_date: scopeConfig.firstExamDate || scopeConfig.startDate || new Date().toISOString().split('T')[0],
         end_date: scopeConfig.endDate || scopeConfig.startDate || new Date().toISOString().split('T')[0],
         semesters: scopeConfig.selectedSemesters,
         departments: scopeConfig.selectedDepartments,

@@ -90,44 +90,56 @@ def generate_hall_tickets_for_session(session_id: str, department_id: str | None
     """
     Generates Hall Tickets for all students who have at least one 
     eligible subject in the given session.
+    For CIE sessions: generates tickets based on enrollment.
+    For SEE sessions: generates tickets based on eligibility (is_eligible=True).
     """
     try:
         session = ExamSession.objects.get(id=session_id)
     except ExamSession.DoesNotExist:
         return {"status": "error", "message": "Exam Session not found"}
 
-    # Get all students who have at least one eligible subject in this session
-    eligible_students = Student.objects.filter(
-        eligibility_records__exam_session=session,
-        eligibility_records__is_eligible=True
-    ).distinct()
-
-    # Fallback: eligibility is tracked against the CIE session, so for SEE
-    # sessions use each student's latest eligibility record (any session).
-    if not eligible_students.exists():
+    # For CIE sessions: generate tickets based on enrollment (no eligibility needed)
+    if session.session_type == 'CIE':
         from scheduling.models import StudentSubjectEnrollment
         enrolled_ids = set(
             StudentSubjectEnrollment.objects.filter(
                 exam_session=session
             ).values_list('student_id', flat=True)
         )
-        if enrolled_ids:
-            seen = set()
-            eligible_ids = set()
-            latest = StudentEligibility.objects.filter(
-                student_id__in=enrolled_ids
-            ).order_by('-updated_at', '-created_at').values_list(
-                'student_id', 'subject_id', 'is_eligible'
+        eligible_students = Student.objects.filter(id__in=enrolled_ids)
+    else:
+        # For SEE sessions: generate tickets based on eligibility
+        eligible_students = Student.objects.filter(
+            eligibility_records__exam_session=session,
+            eligibility_records__is_eligible=True
+        ).distinct()
+
+        # Fallback: eligibility is tracked against the CIE session, so for SEE
+        # sessions use each student's latest eligibility record (any session).
+        if not eligible_students.exists():
+            from scheduling.models import StudentSubjectEnrollment
+            enrolled_ids = set(
+                StudentSubjectEnrollment.objects.filter(
+                    exam_session=session
+                ).values_list('student_id', flat=True)
             )
-            for student_id, subject_id, is_eligible in latest:
-                key = (student_id, subject_id)
-                if key in seen:
-                    continue
-                seen.add(key)
-                if is_eligible:
-                    eligible_ids.add(student_id)
-            # Only students with at least one eligible subject get a ticket
-            eligible_students = Student.objects.filter(id__in=eligible_ids)
+            if enrolled_ids:
+                seen = set()
+                eligible_ids = set()
+                latest = StudentEligibility.objects.filter(
+                    student_id__in=enrolled_ids
+                ).order_by('-updated_at', '-created_at').values_list(
+                    'student_id', 'subject_id', 'is_eligible'
+                )
+                for student_id, subject_id, is_eligible in latest:
+                    key = (student_id, subject_id)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    if is_eligible:
+                        eligible_ids.add(student_id)
+                # Only students with at least one eligible subject get a ticket
+                eligible_students = Student.objects.filter(id__in=eligible_ids)
 
     if department_id:
         eligible_students = eligible_students.filter(department_id=department_id)

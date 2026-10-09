@@ -440,11 +440,10 @@ class _BookletScannerModalState extends State<BookletScannerModal> {
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: AppTheme.primary,
                                 foregroundColor: Colors.white,
+                                disabledBackgroundColor: AppTheme.primary.withValues(alpha: 0.4),
                                 padding: const EdgeInsets.symmetric(vertical: 16),
                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                                 elevation: 0,
-                              ).copyWith(
-                                disabledBackgroundColor: MaterialStateProperty.all(AppTheme.primary.withValues(alpha: 0.4)),
                               ),
                             ),
                           ),

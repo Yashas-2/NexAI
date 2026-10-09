@@ -88,33 +88,43 @@ class HallTicketSerializer(serializers.ModelSerializer):
             return None
 
         # Get the subjects the student is eligible for in this session
-        eligible_subjects = list(StudentEligibility.objects.filter(
-            student=obj.student,
-            exam_session=obj.exam_session,
-            is_eligible=True
-        ).values_list('subject_id', flat=True))
-
-        # Fallback: eligibility lives in the CIE session, so for SEE sessions
-        # resolve each subject from the student's latest eligibility record.
-        if not eligible_subjects:
-            seen = set()
-            latest = StudentEligibility.objects.filter(
-                student=obj.student
-            ).order_by('-updated_at', '-created_at').values_list('subject_id', 'is_eligible')
-            for subject_id, is_eligible in latest:
-                if subject_id in seen:
-                    continue
-                seen.add(subject_id)
-                if is_eligible:
-                    eligible_subjects.append(subject_id)
-
-        # Fallback: if no eligibility records at all, use enrolled subjects
-        if not eligible_subjects:
-            enrolled_subjects = StudentSubjectEnrollment.objects.filter(
+        # For CIE sessions: no eligibility check needed - use enrolled subjects
+        # For SEE sessions: check eligibility
+        if obj.exam_session.session_type == 'CIE':
+            # CIE exams: no eligibility check - just use enrolled subjects
+            eligible_subjects = list(StudentSubjectEnrollment.objects.filter(
                 student=obj.student,
                 exam_session=obj.exam_session,
-            ).values_list('subject_id', flat=True)
-            eligible_subjects = list(enrolled_subjects)
+            ).values_list('subject_id', flat=True))
+        else:
+            # SEE exams: check eligibility
+            eligible_subjects = list(StudentEligibility.objects.filter(
+                student=obj.student,
+                exam_session=obj.exam_session,
+                is_eligible=True
+            ).values_list('subject_id', flat=True))
+
+            # Fallback: eligibility lives in the CIE session, so for SEE sessions
+            # resolve each subject from the student's latest eligibility record.
+            if not eligible_subjects:
+                seen = set()
+                latest = StudentEligibility.objects.filter(
+                    student=obj.student
+                ).order_by('-updated_at', '-created_at').values_list('subject_id', 'is_eligible')
+                for subject_id, is_eligible in latest:
+                    if subject_id in seen:
+                        continue
+                    seen.add(subject_id)
+                    if is_eligible:
+                        eligible_subjects.append(subject_id)
+
+            # Fallback: if no eligibility records at all, use enrolled subjects
+            if not eligible_subjects:
+                enrolled_subjects = StudentSubjectEnrollment.objects.filter(
+                    student=obj.student,
+                    exam_session=obj.exam_session,
+                ).values_list('subject_id', flat=True)
+                eligible_subjects = list(enrolled_subjects)
 
         slots = TimetableSlot.objects.filter(
             exam_session=obj.exam_session,
@@ -125,11 +135,18 @@ class HallTicketSerializer(serializers.ModelSerializer):
         )
 
         # Verified eligibility (any session) — surfaces per-subject status to the UI
-        verified_eligible = set(
-            StudentEligibility.objects.filter(
-                student=obj.student, is_eligible=True
-            ).values_list('subject_id', flat=True)
-        )
+        # For CIE sessions: all enrolled subjects are considered eligible
+        if obj.exam_session.session_type == 'CIE':
+            verified_eligible = set(StudentSubjectEnrollment.objects.filter(
+                student=obj.student,
+                exam_session=obj.exam_session,
+            ).values_list('subject_id', flat=True))
+        else:
+            verified_eligible = set(
+                StudentEligibility.objects.filter(
+                    student=obj.student, is_eligible=True
+                ).values_list('subject_id', flat=True)
+            )
 
         from vault.models import QuestionPaper
         # Pre-fetch all finalized papers for this session — drafts are still
@@ -205,23 +222,31 @@ class HallTicketSerializer(serializers.ModelSerializer):
                 })
         else:
             # Fallback: show eligible subjects even if no timetable slots exist yet
-            # For CIE sessions, read the date/time from CIEConfiguration
-            # Dedupe: keep only the latest eligibility record per subject
-            eligibilities = []
-            seen_subjects = set()
-            for elig in (
-                StudentEligibility.objects.filter(
+            # For CIE sessions, show all enrolled subjects (no eligibility check)
+            # For SEE sessions, show only eligible subjects
+            if obj.exam_session.session_type == 'CIE':
+                eligibilities_qs = StudentSubjectEnrollment.objects.filter(
                     student=obj.student,
                     exam_session=obj.exam_session,
-                    is_eligible=True,
-                )
-                .select_related('subject')
-                .order_by('-updated_at', '-created_at')
-            ):
-                if elig.subject_id in seen_subjects:
-                    continue
-                seen_subjects.add(elig.subject_id)
-                eligibilities.append(elig)
+                ).select_related('subject')
+                eligibilities = list(eligibilities_qs)
+            else:
+                # Dedupe: keep only the latest eligibility record per subject
+                eligibilities = []
+                seen_subjects = set()
+                for elig in (
+                    StudentEligibility.objects.filter(
+                        student=obj.student,
+                        exam_session=obj.exam_session,
+                        is_eligible=True,
+                    )
+                    .select_related('subject')
+                    .order_by('-updated_at', '-created_at')
+                ):
+                    if elig.subject_id in seen_subjects:
+                        continue
+                    seen_subjects.add(elig.subject_id)
+                    eligibilities.append(elig)
             
             if eligibilities:
                 from cie.models import CIEConfiguration
@@ -252,6 +277,9 @@ class HallTicketSerializer(serializers.ModelSerializer):
                                 )
 
                             room_name = getattr(cie_config, 'room', None)
+                            # For CIE, elig is StudentSubjectEnrollment; for SEE, it's StudentEligibility
+                            cie_marks = getattr(elig, 'cie_marks', None)
+                            attendance = getattr(elig, 'attendance_percentage', None)
                             data.append({
                                 "subject_code": elig.subject.code,
                                 "subject_name": f"{elig.subject.name} ({cie_config.get_cie_number_display()})",
@@ -267,8 +295,8 @@ class HallTicketSerializer(serializers.ModelSerializer):
                                 "seat": None,
                                 "desk_number": None,
                                 "slot_id": None,
-                                "cie_marks": float(elig.cie_marks) if elig.cie_marks is not None else None,
-                                "attendance": float(elig.attendance_percentage) if elig.attendance_percentage is not None else None,
+                                "cie_marks": float(cie_marks) if cie_marks is not None else None,
+                                "attendance": float(attendance) if attendance is not None else None,
                                 "is_cie": True,
                                 "eligible": True,
                                 "question_paper_id": _get_scrutiny_id(cie_config) or papers_map.get(str(elig.subject_id)),
@@ -301,10 +329,11 @@ class HallTicketSerializer(serializers.ModelSerializer):
                     student=obj.student,
                     exam_session=obj.exam_session,
                 ).select_related('subject')
-                # Only show subjects the student is actually eligible for
-                if eligible_subjects:
+                # For CIE: show all enrolled subjects; For SEE: only show eligible subjects
+                if obj.exam_session.session_type != 'CIE' and eligible_subjects:
                     enrolled = enrolled.filter(subject_id__in=eligible_subjects)
                 for enrollment in enrolled:
+                    is_cie = obj.exam_session.session_type == 'CIE'
                     data.append({
                         "subject_code": enrollment.subject.code,
                         "subject_name": enrollment.subject.name,
@@ -321,8 +350,8 @@ class HallTicketSerializer(serializers.ModelSerializer):
                         "desk_number": None,
                         "slot_id": None,
                         "attendance": None,
-                        "is_cie": False,
-                        "eligible": None,
+                        "is_cie": is_cie,
+                        "eligible": True if is_cie else None,
                         "question_paper_id": papers_map.get(str(enrollment.subject_id)),
                     })
         return data

@@ -66,6 +66,9 @@ Future<void> _fetchExams() async {
                 questionPaperId: slot['question_paper_id'],
                 slotId: slot['slot_id'],
                 sessionName: ticket['exam_session_name'],
+                sessionStartDate: ticket['exam_session_details'] is Map
+                    ? (ticket['exam_session_details']['start_date']?.toString())
+                    : null,
                 isCie: slot['is_cie'] != false,
               ));
             }
@@ -92,6 +95,7 @@ Future<void> _fetchExams() async {
                       questionPaperId: exam.questionPaperId,
                       slotId: exam.slotId,
                       sessionName: exam.sessionName,
+                      sessionStartDate: exam.sessionStartDate,
                       isCie: exam.isCie,
                       attemptCompleted: statusData['is_completed'] == true,
                       attemptSubmittedAt: statusData['submitted_at'] != null 
@@ -237,6 +241,31 @@ Future<void> _fetchExams() async {
     }
     final sessionLabel = sessionNames.isEmpty ? 'No session' : sessionNames.join(' • ');
 
+    // Exam start = earliest dated exam (matches CoE first exam date);
+    // fall back to the session start date on the hall ticket.
+    String? examsStartLabel;
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    String formatDate(DateTime d) =>
+        'Exams start ${d.day} ${monthNames[d.month - 1]} ${d.year}';
+    DateTime? earliest;
+    for (final e in _exams) {
+      final d = DateTime.tryParse(e.examDate);
+      if (d == null) continue;
+      if (earliest == null || d.isBefore(earliest)) earliest = d;
+    }
+    if (earliest != null) {
+      examsStartLabel = formatDate(earliest);
+    } else {
+      for (final e in _exams) {
+        final raw = e.sessionStartDate;
+        if (raw == null || raw.isEmpty) continue;
+        final d = DateTime.tryParse(raw);
+        examsStartLabel = d != null ? formatDate(d) : 'Exams start $raw';
+        break;
+      }
+    }
+
     return Scaffold(
       backgroundColor: AppTheme.bgBase,
       appBar: AppBar(
@@ -244,9 +273,13 @@ Future<void> _fetchExams() async {
           children: [
             const Icon(Icons.verified_user, color: AppTheme.primary, size: 20),
             const SizedBox(width: 8),
-            Text(
-              'AI Proctored Exam Terminal',
-              style: GoogleFonts.inter(fontWeight: FontWeight.w900, fontSize: 16),
+            Expanded(
+              child: Text(
+                'AI Proctored Exam Terminal',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: GoogleFonts.inter(fontWeight: FontWeight.w900, fontSize: 16),
+              ),
             ),
           ],
         ),
@@ -319,8 +352,12 @@ Future<void> _fetchExams() async {
             const SizedBox(height: 20),
 
             // ── Active / Scheduled Exams Section ──
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            // Wrap (not Row) so the session label drops to the next line on
+            // narrow screens instead of overflowing horizontally.
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 Text(
                   'Upcoming Degree Examinations (${_exams.length})',
@@ -336,6 +373,34 @@ Future<void> _fetchExams() async {
                 ),
               ],
             ),
+            if (examsStartLabel != null) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEFF6FF),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFFBFDBFE)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.event_available, size: 13, color: Color(0xFF2563EB)),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        '🎓 $examsStartLabel — as published by CoE',
+                        style: const TextStyle(
+                          color: Color(0xFF1D4ED8),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
             const SizedBox(height: 12),
 
             // Active Exam Cards (ALL exams currently in their time window)

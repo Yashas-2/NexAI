@@ -396,13 +396,17 @@ class FacultyMarksSyncView(views.APIView):
             updated_count += 1
 
         if records_to_create:
-            StudentEligibility.objects.bulk_create(records_to_create, ignore_conflicts=True)
+            StudentEligibility.objects.bulk_create(
+                records_to_create, ignore_conflicts=True, batch_size=50
+            )
         if records_to_update:
+            # Small batches keep each UPDATE statement well under SQLite's
+            # token limits (100-row/8-field CASE updates exceed them).
             StudentEligibility.objects.bulk_update(
                 records_to_update,
                 ['attendance_percentage', 'cie1_marks', 'cie2_marks', 'cie3_marks',
                  'assignment_marks', 'cie_marks', 'is_eligible', 'remarks'],
-                batch_size=100
+                batch_size=25
             )
 
         return Response({"message": f"Successfully synced marks for {updated_count} students."}, status=status.HTTP_200_OK)

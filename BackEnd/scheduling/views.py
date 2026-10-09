@@ -21,6 +21,32 @@ from .serializers import (
 )
 
 
+def _pick_faculty_invigilator(subject, rotation):
+    """Auto-assign a chief invigilator for a slot.
+
+    Only normal FACULTY from the subject's own branch (department) are ever
+    considered — never HOD, evaluator, CoE or any other role. When the branch
+    has no faculty of its own, falls back to any FACULTY (still never another
+    role). ``rotation`` is a caller-owned dict used for fair round-robin
+    selection within each branch.
+    """
+    from users.models import User
+    from users.constants import UserRole
+
+    dept_id = subject.department_id
+    pool = list(
+        User.objects.filter(role=UserRole.FACULTY, department_id=dept_id).order_by("id")
+    )
+    if not pool:
+        pool = list(User.objects.filter(role=UserRole.FACULTY).order_by("id"))
+    if not pool:
+        return None
+
+    idx = rotation.get(dept_id, 0)
+    rotation[dept_id] = idx + 1
+    return pool[idx % len(pool)]
+
+
 # ─── Subject ──────────────────────────────────────────────────────────────────
 
 class SubjectListCreateView(generics.ListCreateAPIView):
@@ -65,9 +91,14 @@ class SubjectDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class SubjectEnrolledStudentsView(generics.ListAPIView):
-    """List all students enrolled in a specific subject."""
+    """List all students enrolled in a specific subject.
+
+    Returns the COMPLETE roster (unpaginated) — dashboards render the full
+    class list, and page-1-only results silently hid every student past 20.
+    """
     serializer_class = StudentSubjectEnrollmentSerializer
     permission_classes = [IsStaff]
+    pagination_class = None
 
     def get_queryset(self):
         subject_id = self.kwargs.get("pk")
@@ -424,12 +455,9 @@ def trigger_timetable_generation(request):
                 user=request.user if request.user.is_authenticated else None,
             )
 
-            from users.models import User
             from scheduling.models import InvigilationDuty, InvigilatorSessionKey
-            import random
 
-            invigilators = list(User.objects.filter(role__in=["INVIGILATOR", "HOD", "EVALUATOR"]).order_by('?'))
-            invigilator_idx = 0
+            _invig_rotation = {}
 
             slots_to_create = []
             duties_to_create = []
@@ -533,10 +561,8 @@ def trigger_timetable_generation(request):
                     slots_to_create.append(slot)
                     
                     # Create InvigilationDuty and SessionKey
-                    if invigilators:
-                        inv = invigilators[invigilator_idx % len(invigilators)]
-                        invigilator_idx += 1
-                        
+                    inv = _pick_faculty_invigilator(subj, _invig_rotation)
+                    if inv:
                         duty = InvigilationDuty(
                             id=_uuid.uuid4(),
                             timetable_slot=slot,
@@ -690,9 +716,7 @@ def trigger_timetable_generation(request):
         per_day = max(1, min(2, session.exams_per_day or 1))
         day_starts = [_time(9, 0), _time(14, 0)][:per_day]
 
-        invigilators = list(
-            User.objects.filter(role__in=["INVIGILATOR", "HOD", "EVALUATOR"]).order_by('?')
-        )
+        _invig_rotation = {}
 
         def _session_key():
             return f"SEE-{_uuid.uuid4().hex[:4].upper()}-{_uuid.uuid4().hex[:4].upper()}"
@@ -767,8 +791,8 @@ def trigger_timetable_generation(request):
                     )
                     slots_to_create.append(slot)
 
-                    if invigilators:
-                        inv = invigilators[sum(len(s.seat_map) for s in slots_to_create) % len(invigilators)]
+                    inv = _pick_faculty_invigilator(subj, _invig_rotation)
+                    if inv:
                         duty = _Duty(
                             id=_uuid.uuid4(),
                             timetable_slot=slot,
@@ -1319,6 +1343,33 @@ class AllocationSaveView(generics.GenericAPIView):
             exam_session, slot_ids=touched_slot_ids
         )
 
+        # Every enrolled student must hold a hall ticket for this session or
+        # the new allocation will never appear in their student app.
+        try:
+            from eligibility.tasks import generate_hall_tickets_for_session
+            generate_hall_tickets_for_session(str(exam_session.id))
+        except Exception as exc:
+            warnings.append(f"Hall ticket generation failed: {exc}")
+
+        # Align the session window with the dates the wizard just published so
+        # students see the real first-exam date (exam_session_details.start_date).
+        alloc_dates = []
+        for alloc in allocations:
+            raw = alloc.get("exam_date")
+            if not raw:
+                continue
+            try:
+                alloc_dates.append(date.fromisoformat(str(raw)[:10]))
+            except ValueError:
+                continue
+        if alloc_dates:
+            earliest = min(alloc_dates)
+            latest = max(alloc_dates)
+            if exam_session.start_date != earliest:
+                exam_session.start_date = earliest
+            if exam_session.end_date and latest > exam_session.end_date:
+                exam_session.end_date = latest
+
         if not errors:
             exam_session.status = ExamSession.SessionStatus.SCHEDULED
             exam_session.save()
@@ -1527,6 +1578,12 @@ class InvigilatorSessionKeyView(APIView):
         # Check if a key already exists for this duty
         existing = InvigilatorSessionKey.objects.filter(duty=duty).first()
         if existing:
+            # Schedule generation creates keys inactive; the invigilator
+            # opening this duty is the moment the session starts — activate
+            # it here or the activate endpoint rejects with "deactivated".
+            if not existing.is_active:
+                existing.is_active = True
+                existing.save(update_fields=["is_active"])
             serializer = InvigilatorSessionKeySerializer(existing)
             return Response(serializer.data, status=status.HTTP_200_OK)
 

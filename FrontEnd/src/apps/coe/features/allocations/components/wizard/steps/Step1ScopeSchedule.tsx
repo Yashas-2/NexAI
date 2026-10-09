@@ -51,6 +51,17 @@ export const Step1ScopeSchedule: React.FC<Step1ScopeScheduleProps> = ({
   const [timeSlots, setTimeSlots] = useState<TimeSlot[]>(() => {
     return config.selectedSlots.length > 0 ? [...config.selectedSlots] : DEFAULT_TIME_SLOTS;
   });
+  const [startAnnounced, setStartAnnounced] = useState(false);
+  const rawStart = config.firstExamDate || config.startDate || '';
+  const startDateString = rawStart
+    ? new Date(`${rawStart}T00:00:00Z`).toLocaleDateString('en-GB', {
+        weekday: 'long',
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+        timeZone: 'UTC',
+      })
+    : '';
 
   const toggleDept = (deptCode: string) => {
     const isSelected = config.selectedDepartments.includes(deptCode);
@@ -307,7 +318,7 @@ export const Step1ScopeSchedule: React.FC<Step1ScopeScheduleProps> = ({
             value={config.firstExamDate || ''}
             min={config.startDate}
             max={config.endDate}
-            onChange={e => onChange({ firstExamDate: e.target.value })}
+            onChange={e => { onChange({ firstExamDate: e.target.value }); setStartAnnounced(false); }}
             style={{
               width: '100%',
               padding: '10px 14px',
@@ -317,6 +328,41 @@ export const Step1ScopeSchedule: React.FC<Step1ScopeScheduleProps> = ({
               boxSizing: 'border-box',
             }}
           />
+        </div>
+
+        {/* Exam start announcement — this date is published to student apps */}
+        <div style={{ gridColumn: '1 / -1' }}>
+          <button
+            type="button"
+            disabled={!startDateString}
+            onClick={() => setStartAnnounced(true)}
+            style={{
+              width: '100%',
+              padding: '13px 18px',
+              borderRadius: '10px',
+              border: startAnnounced ? '1.5px solid #16A34A' : '1.5px dashed #2563EB',
+              background: !startDateString
+                ? '#F1F5F9'
+                : startAnnounced ? '#F0FDF4' : '#EFF6FF',
+              color: !startDateString
+                ? '#94A3B8'
+                : startAnnounced ? '#166534' : '#1D4ED8',
+              fontSize: '0.875rem',
+              fontWeight: 800,
+              cursor: startDateString ? 'pointer' : 'not-allowed',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '8px',
+              boxSizing: 'border-box',
+            }}
+          >
+            {!startDateString
+              ? '📅 Set the First Exam Date to see when exams start'
+              : startAnnounced
+                ? `✓ Exams start on ${startDateString} — visible to students`
+                : `📣 Exams start on ${startDateString} — click to publish to students`}
+          </button>
         </div>
       </div>
 

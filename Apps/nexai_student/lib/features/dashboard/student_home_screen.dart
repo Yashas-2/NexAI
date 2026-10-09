@@ -384,6 +384,32 @@ class _StudentDashboardTabState extends State<_StudentDashboardTab> {
         : null;
     final hasCgpa = cgpa != null && cgpa.toString() != 'null';
 
+    // Exam cycle start = earliest dated exam (matches CoE first exam date);
+    // fall back to the session start date published on the hall ticket.
+    String? examsStartLabel;
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    DateTime? earliestStart;
+    for (final e in exams) {
+      final d = e['_start'] as DateTime?;
+      if (d == null) continue;
+      if (earliestStart == null || d.isBefore(earliestStart)) earliestStart = d;
+    }
+    if (earliestStart == null) {
+      for (final t in _hallTickets) {
+        final details = t['exam_session_details'];
+        final raw = details is Map ? details['start_date']?.toString() : null;
+        if (raw == null || raw.isEmpty) continue;
+        final d = DateTime.tryParse(raw);
+        if (d == null) continue;
+        if (earliestStart == null || d.isBefore(earliestStart)) earliestStart = d;
+      }
+    }
+    if (earliestStart != null) {
+      examsStartLabel =
+          'Exams start ${earliestStart.day} ${monthNames[earliestStart.month - 1]} ${earliestStart.year}';
+    }
+
     return Scaffold(
       backgroundColor: AppTheme.bgBase,
       appBar: AppBar(
@@ -495,6 +521,37 @@ class _StudentDashboardTabState extends State<_StudentDashboardTab> {
             ),
 
             const SizedBox(height: 18),
+
+            // Exam cycle start date published by the CoE allocation wizard
+            if (examsStartLabel != null) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEFF6FF),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFBFDBFE)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.event_available, size: 15, color: Color(0xFF2563EB)),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        '🎓 $examsStartLabel — as published by CoE',
+                        style: const TextStyle(
+                          color: Color(0xFF1D4ED8),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
 
             // Active Next Exam Countdown Card
             if (nextExam != null && countdown != null) ...[

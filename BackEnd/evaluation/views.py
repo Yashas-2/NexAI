@@ -686,13 +686,13 @@ class ResultPublishViewSet(viewsets.ViewSet):
         )
         if not bundles:
             return Response({"error": "No bundles exist for this subject/session — nothing to certify."}, status=status.HTTP_400_BAD_REQUEST)
-        unverified = [b for b in bundles if b.status not in ("VERIFIED", "CERTIFIED", "DISPATCHED")]
+        unverified = [b for b in bundles if b.status not in ("COMPLETED", "VERIFIED", "CERTIFIED", "DISPATCHED")]
         if unverified:
             return Response(
                 {"error": f"All bundles must be verified first. {unverified[0].name} is {unverified[0].status}."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        newly = [b for b in bundles if b.status == "VERIFIED"]
+        newly = [b for b in bundles if b.status in ("COMPLETED", "VERIFIED")]
         for b in newly:
             b.status = "CERTIFIED"
             b.save(update_fields=["status"])
@@ -779,7 +779,7 @@ class ResultPublishViewSet(viewsets.ViewSet):
             EvaluationBundle.objects.filter(subject=subject, exam_session=exam_session)
         )
         if bundles:
-            unverified = [b for b in bundles if b.status not in ("VERIFIED", "CERTIFIED", "DISPATCHED")]
+            unverified = [b for b in bundles if b.status not in ("COMPLETED", "VERIFIED", "CERTIFIED", "DISPATCHED")]
             if unverified:
                 first = unverified[0]
                 return Response(

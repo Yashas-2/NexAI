@@ -517,12 +517,71 @@ class TimetableRescheduleLog(models.Model):
         )
 
 
+def _reset_attempts_for(pairs):
+    """
+    Void student attempt state for rescheduled (subject, exam_session) pairs.
+
+    Attempts are keyed by (student, subject, exam_session), not by slot/date,
+    so without this reset the new occasion inherits the old one's submission:
+    the student sees "Completed" and cannot enter the rescheduled exam, and
+    graded marks from the voided occasion linger in Result.
+    """
+    if not pairs:
+        return
+
+    from django.db.models import Q
+    from django.utils import timezone
+
+    see_q = Q()
+    cie_q = Q()
+    for subject_id, session_id in pairs:
+        see_q |= Q(subject_id=subject_id, exam_session_id=session_id)
+        cie_q |= Q(cie_config__subject_id=subject_id, cie_config__exam_session_id=session_id)
+
+    from student.models import SEEAnswer, SEEAttempt, Result
+
+    see_attempts = SEEAttempt.objects.filter(see_q)
+    SEEAnswer.objects.filter(attempt__in=see_attempts).delete()
+    see_attempts.update(
+        is_locked=False,
+        submitted_at=None,
+        proctor_strikes=0,
+        started_at=timezone.now(),
+    )
+    Result.objects.filter(see_q).update(
+        see_marks=None,
+        see_converted_marks=None,
+        total_marks=None,
+        grade=None,
+    )
+
+    from evaluation.models import EvaluationBundle
+
+    EvaluationBundle.objects.filter(see_q).delete()
+
+    from cie.models import CIEAnswer, CIEAttempt
+
+    cie_attempts = CIEAttempt.objects.filter(cie_q)
+    CIEAnswer.objects.filter(attempt__in=cie_attempts).delete()
+    cie_attempts.update(
+        is_locked=False,
+        submitted_at=None,
+        submission_status="IN_PROGRESS",
+        proctor_strikes=0,
+        started_at=timezone.now(),
+    )
+
+
 def archive_slots(queryset, reason="", user=None):
     """
     Archive timetable slots instead of deleting them: status -> RESCHEDULED
     plus a TimetableRescheduleLog audit row. Returns number archived.
+
+    Also voids student attempt state for every archived (subject, session)
+    pair so a rescheduled exam always starts students fresh.
     """
     archived = 0
+    affected = []
     for slot in queryset.select_related("subject", "room", "exam_session"):
         if slot.status == TimetableSlot.SlotStatus.RESCHEDULED:
             continue
@@ -543,5 +602,9 @@ def archive_slots(queryset, reason="", user=None):
         slot.status = TimetableSlot.SlotStatus.RESCHEDULED
         slot.save(update_fields=["status"])
         archived += 1
+        if slot.subject_id and slot.exam_session_id:
+            affected.append((slot.subject_id, slot.exam_session_id))
+    if affected:
+        _reset_attempts_for(set(affected))
     return archived
 
